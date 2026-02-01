@@ -1,4 +1,4 @@
-﻿thresholds:
+thresholds:
   alignment: 80
   wait_diff: 12
   no_trade: 65
