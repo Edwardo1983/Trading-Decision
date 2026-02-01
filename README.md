@@ -5,7 +5,7 @@ RO
 Sistem de suport decizional pentru trading crypto (BTC/altcoins). Agrega indicatori tehnici, context Smart Money, sentiment si un tag astro experimental. NU este bot de trading si NU executa ordine.
 
 ## Caracteristici principale
-- Date live Binance (REST + WS optional)
+- Date live Binance/MEXC (REST + WS optional)
 - Indicatori modulari (1 fisier / indicator)
 - Scor agregat BUY / SELL / NO_TRADE
 - Market regime zilnic (AGGRESSIVE / MODERATE / CHILL)
@@ -78,6 +78,7 @@ python -m app validate-config
 - Fisier principal: `config/default.yaml`
 - Profile: `config/aggressive.yaml`, `config/conservative.yaml`
 - Multi-symbol: `app.symbols` in YAML sau `APP_SYMBOLS=BTCUSDT,ETHUSDT`
+- Provider date: `data.provider` = auto/binance/mexc (auto selecteaza disponibil)
 
 Sectiuni cheie:
 - `indicator_weights`
@@ -105,7 +106,7 @@ EN
 Decision-support system for crypto trading (BTC/altcoins). Aggregates technical indicators, Smart Money context, sentiment, and an experimental astro tag. It is NOT a trading bot and does NOT place orders.
 
 ## Key features
-- Live Binance market data (REST + optional WS)
+- Live Binance/MEXC market data (REST + optional WS)
 - Modular indicators (1 file / indicator)
 - Aggregated BUY / SELL / NO_TRADE scoring
 - Daily market regime (AGGRESSIVE / MODERATE / CHILL)
@@ -178,6 +179,7 @@ python -m app validate-config
 - Main file: `config/default.yaml`
 - Profiles: `config/aggressive.yaml`, `config/conservative.yaml`
 - Multi-symbol: `app.symbols` in YAML or `APP_SYMBOLS=BTCUSDT,ETHUSDT`
+- Data provider: `data.provider` = auto/binance/mexc (auto selects available)
 
 Key sections:
 - `indicator_weights`

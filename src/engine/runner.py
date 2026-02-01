@@ -12,10 +12,10 @@ from core.utils.config_loader import load_config
 from core.utils.ring_buffer import RingBuffer
 from core.utils.time_utils import now_tz
 from core.utils.sound_alert import play_sound
-from data.binance.client import BinanceRESTClient
-from data.binance.mapper import kline_to_candle, ws_to_candle
+from data.binance.mapper import ws_to_candle
 from data.binance.ws import BinanceWSClient
 from data.sentiment import SentimentClient
+from data.provider import BinanceProvider, MexcProvider
 from data.export.csv_logger import CSVMinuteLogger
 from engine.aggregator import aggregate
 from engine.daily_regime import classify_regime
@@ -51,22 +51,25 @@ class Runner:
         self._ws_client: Optional[BinanceWSClient] = None
         self._ws_task: Optional[asyncio.Task] = None
 
-        api_key = config.get("binance", {}).get("api_key", "")
-        api_secret = config.get("binance", {}).get("api_secret", "")
+        data_cfg = config.get("data", {})
+        self.provider_name = str(data_cfg.get("provider", "auto")).lower()
+        binance_cfg = config.get("binance", {})
+        mexc_cfg = config.get("mexc", {})
         market_type = app.get("market_type", "spot")
-        testnet = bool(config.get("binance", {}).get("testnet", False))
-        self.rest_client = BinanceRESTClient(api_key, api_secret, market_type, testnet)
+        testnet = bool(binance_cfg.get("testnet", False))
+        self._binance_provider = BinanceProvider(
+            api_key=binance_cfg.get("api_key", ""),
+            api_secret=binance_cfg.get("api_secret", ""),
+            market_type=market_type,
+            testnet=testnet,
+        )
+        self._mexc_provider = MexcProvider(
+            api_key=mexc_cfg.get("api_key", ""),
+            api_secret=mexc_cfg.get("api_secret", ""),
+        )
+        self.provider = self._binance_provider if self.provider_name in ("auto", "binance") else self._mexc_provider
 
-        sentiment_cfg = config.get("sentiment", {})
         self.sentiment_client: Optional[SentimentClient] = None
-        if sentiment_cfg.get("enabled", True):
-            self.sentiment_client = SentimentClient(
-                rest_client=self.rest_client,
-                refresh_seconds=int(sentiment_cfg.get("refresh_seconds", 300)),
-                long_short_period=str(sentiment_cfg.get("long_short_period", "5m")),
-                fear_greed_enabled=bool(sentiment_cfg.get("fear_greed_enabled", True)),
-                spot_trade_depth=int(sentiment_cfg.get("spot_trade_depth", 0)),
-            )
 
         load_indicators()
         indicator_params = config.get("indicator_params", {})
@@ -130,17 +133,46 @@ class Runner:
         await self._stop_ws()
 
     async def _bootstrap_buffers(self) -> None:
+        await self._select_provider()
+        self._init_sentiment()
         await self._update_from_rest(initial=True)
         self.event_bus.publish("info", "Buffers initialized")
+
+    async def _select_provider(self) -> None:
+        if self.provider_name != "auto":
+            return
+        try:
+            if await self.provider.ping():
+                return
+        except Exception:
+            pass
+        try:
+            if await self._mexc_provider.ping():
+                self.provider = self._mexc_provider
+                self.event_bus.publish("info", "Provider switched to MEXC")
+                return
+        except Exception:
+            pass
+        self.event_bus.publish("warning", "Provider auto: using Binance (fallback)")
+
+    def _init_sentiment(self) -> None:
+        sentiment_cfg = self.config.get("sentiment", {})
+        if sentiment_cfg.get("enabled", True):
+            self.sentiment_client = SentimentClient(
+                provider=self.provider,
+                refresh_seconds=int(sentiment_cfg.get("refresh_seconds", 300)),
+                long_short_period=str(sentiment_cfg.get("long_short_period", "5m")),
+                fear_greed_enabled=bool(sentiment_cfg.get("fear_greed_enabled", True)),
+                spot_trade_depth=int(sentiment_cfg.get("spot_trade_depth", 0)),
+            )
 
     async def _update_from_rest(self, initial: bool = False) -> None:
         tasks = []
         for tf in self.timeframes:
-            tasks.append(self.rest_client.get_klines(self.symbol, tf, limit=self.rest_limit))
+            tasks.append(self.provider.get_candles(self.symbol, tf, limit=self.rest_limit))
         results = await asyncio.gather(*tasks)
 
-        for tf, klines in zip(self.timeframes, results):
-            candles = [kline_to_candle(k) for k in klines]
+        for tf, candles in zip(self.timeframes, results):
             buffer = self.buffers[tf]
             if initial:
                 buffer.extend(candles)
@@ -154,6 +186,8 @@ class Runner:
     async def _start_ws(self) -> None:
         app = self.config.get("app", {})
         if not app.get("use_ws", True):
+            return
+        if not getattr(self.provider, "supports_ws", False):
             return
         ws_tf = app.get("ws_timeframe", "1m")
         if ws_tf not in self.timeframes:

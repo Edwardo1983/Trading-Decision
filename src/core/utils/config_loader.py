@@ -72,6 +72,10 @@ def load_config() -> Dict[str, Any]:
         base.setdefault("app", {})["symbol"] = symbol
         base["app"]["symbols"] = [symbol]
 
+    provider_env = os.getenv("APP_PROVIDER")
+    if provider_env:
+        base.setdefault("data", {})["provider"] = provider_env.lower()
+
     # Binance env overrides
     api_key = os.getenv("BINANCE_API_KEY")
     api_secret = os.getenv("BINANCE_API_SECRET")
@@ -84,6 +88,16 @@ def load_config() -> Dict[str, Any]:
             base["binance"]["api_secret"] = api_secret
         if testnet is not None:
             base["binance"]["testnet"] = testnet.lower() == "true"
+
+    # MEXC env overrides
+    mexc_key = os.getenv("MEXC_API_KEY")
+    mexc_secret = os.getenv("MEXC_API_SECRET")
+    if mexc_key or mexc_secret:
+        base.setdefault("mexc", {})
+        if mexc_key:
+            base["mexc"]["api_key"] = mexc_key
+        if mexc_secret:
+            base["mexc"]["api_secret"] = mexc_secret
 
     # Optional planetary provider key (stored but not used by default)
     planetary_key = os.getenv("PLANETARY_API_KEY")

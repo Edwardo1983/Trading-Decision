@@ -13,12 +13,17 @@ app:
     lon: 26.1025
   profile: default
 
+mexc:
+  api_key: ""
+  api_secret: ""
+
 binance:
   api_key: ""
   api_secret: ""
   testnet: false
 
 data:
+  provider: auto
   rest_limit: 200
   retry:
     max: 3

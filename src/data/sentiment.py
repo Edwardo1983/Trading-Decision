@@ -6,7 +6,7 @@ from typing import Any, Dict, Optional
 
 import httpx
 
-from data.binance.client import BinanceRESTClient
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -14,13 +14,13 @@ logger = logging.getLogger(__name__)
 class SentimentClient:
     def __init__(
         self,
-        rest_client: BinanceRESTClient,
+        provider: Any,
         refresh_seconds: int = 300,
         long_short_period: str = "5m",
         fear_greed_enabled: bool = True,
         spot_trade_depth: int = 0,
     ):
-        self.rest_client = rest_client
+        self.provider = provider
         self.refresh_seconds = refresh_seconds
         self.long_short_period = long_short_period
         self.fear_greed_enabled = fear_greed_enabled
@@ -52,17 +52,18 @@ class SentimentClient:
         if not self._stale():
             return dict(self._cache)
 
-        ticker_24h = await self.rest_client.get_ticker_24h(symbol)
+        ticker_24h = await self.provider.get_ticker_24h(symbol)
         volume = float(ticker_24h.get("volume", 0) or 0)
-        taker_buy = float(ticker_24h.get("takerBuyBaseAssetVolume", 0) or 0)
-        taker_sell = max(volume - taker_buy, 0.0)
-        buy_sell_ratio = (taker_buy / taker_sell) if taker_sell > 0 else None
-        taker_buy_pct = (taker_buy / volume) if volume > 0 else None
+        taker_buy_raw = ticker_24h.get("takerBuyBaseAssetVolume")
+        taker_buy = float(taker_buy_raw or 0) if taker_buy_raw is not None else None
+        taker_sell = max(volume - taker_buy, 0.0) if taker_buy is not None else None
+        buy_sell_ratio = (taker_buy / taker_sell) if (taker_buy is not None and taker_sell and taker_sell > 0) else None
+        taker_buy_pct = (taker_buy / volume) if (taker_buy is not None and volume > 0) else None
 
         trade_buy_volume = None
         trade_sell_volume = None
-        if self.rest_client.market_type == "spot" and self.spot_trade_depth > 0:
-            trades = await self.rest_client.get_recent_trades(symbol, limit=self.spot_trade_depth)
+        if getattr(self.provider, "market_type", "spot") == "spot" and self.spot_trade_depth > 0:
+            trades = await self.provider.get_recent_trades(symbol, limit=self.spot_trade_depth)
             buy = 0.0
             sell = 0.0
             for trade in trades:
@@ -78,9 +79,9 @@ class SentimentClient:
             if sell > 0:
                 buy_sell_ratio = buy / sell
 
-        funding = await self.rest_client.get_funding_rate(symbol)
-        open_interest = await self.rest_client.get_open_interest(symbol)
-        long_short = await self.rest_client.get_long_short_ratio(symbol, period=self.long_short_period)
+        funding = await self.provider.get_funding_rate(symbol)
+        open_interest = await self.provider.get_open_interest(symbol)
+        long_short = await self.provider.get_long_short_ratio(symbol, period=self.long_short_period)
         if long_short is None and buy_sell_ratio is not None:
             long_short = buy_sell_ratio
 
