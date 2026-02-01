@@ -1,6 +1,6 @@
 ﻿from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, List
 
 from core.models import AggregateResult, IndicatorResult, MarketRegime, SignalState
@@ -98,7 +98,7 @@ def aggregate(indicators: List[IndicatorResult], config: Dict, market_regime: Ma
         alignment=alignment,
         reason=reason,
         market_regime=market_regime,
-        timestamp=datetime.utcnow(),
+        timestamp=datetime.now(timezone.utc),
         confidence_level=confidence_level,
         recommendation=recommendation,
         aligned_indicators=aligned_buy if buy_pct >= sell_pct else aligned_sell,

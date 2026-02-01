@@ -1,7 +1,8 @@
 ﻿from __future__ import annotations
 
-import os
+import json
 import logging
+import os
 from pathlib import Path
 from typing import Any, Dict
 
@@ -27,7 +28,7 @@ def _deep_merge(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any
 def _load_yaml(path: Path) -> Dict[str, Any]:
     if not path.exists():
         raise ConfigError(f"Missing config file: {path}")
-    with path.open("r", encoding="utf-8") as f:
+    with path.open("r", encoding="utf-8-sig") as f:
         data = yaml.safe_load(f) or {}
     if not isinstance(data, dict):
         raise ConfigError(f"Config file must contain a mapping: {path}")
@@ -44,8 +45,8 @@ def _validate_schema(config: Dict[str, Any]) -> None:
     schema_path = config_dir() / "schemas" / "config_schema.json"
     if not schema_path.exists():
         return
-    with schema_path.open("r", encoding="utf-8") as f:
-        schema = yaml.safe_load(f)
+    with schema_path.open("r", encoding="utf-8-sig") as f:
+        schema = json.load(f)
     jsonschema.validate(instance=config, schema=schema)
 
 

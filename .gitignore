@@ -6,6 +6,8 @@ __pycache__/
 *.log
 .env
 assets/ephemeris/*.bsp
+*.download
+*.download2
 logs/
 *.csv
 .pytest_cache/
@@ -18,3 +20,4 @@ dist/
 build/
 Thumbs.db
 .DS_Store
+tester/
