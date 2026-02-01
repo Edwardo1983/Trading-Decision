@@ -1,0 +1,19 @@
+﻿thresholds:
+  alignment: 80
+  wait_diff: 12
+  no_trade: 65
+
+indicator_weights:
+  atr_regime: 6
+  htf_conflict: 12
+
+risk_filters:
+  enable_astro_no_trade: true
+  enable_atr_spike: true
+  enable_htf_conflict: true
+
+daily_regime:
+  adjustments:
+    AGGRESSIVE:
+      alignment_multiplier: 1.25
+      no_trade_multiplier: 1.15

@@ -1,0 +1,290 @@
+app:
+  symbol: BTCUSDT
+  symbols: ["BTCUSDT"]
+  market_type: spot
+  timeframes: ["1m", "5m", "15m", "1h"]
+  refresh_seconds: 60
+  use_ws: true
+  ws_timeframe: "1m"
+  buffer_size: 500
+  timezone: "Europe/Bucharest"
+  location:
+    lat: 44.4268
+    lon: 26.1025
+  profile: default
+
+binance:
+  api_key: ""
+  api_secret: ""
+  testnet: false
+
+data:
+  rest_limit: 200
+  retry:
+    max: 3
+    backoff_seconds: 2
+  ws_reconnect_seconds: 5
+
+thresholds:
+  alignment: 75
+  wait_diff: 10
+  no_trade: 60
+
+indicator_weights:
+  # Price Action (8%)
+  candle_efficiency: 4
+  prev_candle_break: 4
+  # Trend (25%)
+  ema_bias: 5
+  market_structure: 5
+  adx: 4
+  supertrend: 4
+  sma: 3
+  vwma: 2
+  ichimoku: 2
+  parabolic_sar: 2
+  # Momentum (20%)
+  rsi_state: 5
+  macd: 5
+  stochastic_rsi: 3
+  roc_impulse: 3
+  cci: 2
+  williams_r: 2
+  # Volume (18%)
+  cvd: 4
+  vwap_bias: 4
+  obv_flow: 3
+  mfi: 3
+  cmf: 2
+  volume_profile: 1
+  volume_oscillator: 1
+  # Volatility (12%)
+  atr_regime: 4
+  bb_squeeze_expand: 4
+  keltner_channels: 2
+  donchian_channels: 2
+  # Structure (12%)
+  smart_money: 3
+  pivot_points: 3
+  fibonacci: 2
+  support_resistance: 2
+  liquidity_zones: 2
+  # Context (5%)
+  htf_conflict: 2
+  levels_daily_weekly: 1
+  darvas_box: 1
+  astro_calendar: 1
+
+indicator_params:
+  candle_efficiency:
+    bullish_ratio: 0.6
+    bearish_ratio: 0.6
+  prev_candle_break:
+    confirmation: "close"
+    lookback: 1
+  ema_bias:
+    periods: [21, 50, 200]
+    slope_threshold: 0.0
+  market_structure:
+    lookback: 20
+    pivot_lookback: 3
+  smart_money:
+    lookback: 80
+    pivot_lookback: 3
+    atr_period: 14
+    ob_impulse_mult: 1.8
+    min_gap_pct: 0.0005
+    sweep_lookback: 20
+  adx:
+    period: 14
+    threshold: 25
+  supertrend:
+    period: 10
+    multiplier: 3.0
+  rsi_state:
+    period: 14
+    overbought: 70
+    oversold: 30
+    midline: 50
+  macd:
+    fast: 12
+    slow: 26
+    signal: 9
+  stochastic_rsi:
+    rsi_period: 14
+    stoch_period: 14
+    smooth_k: 3
+    smooth_d: 3
+    overbought: 80
+    oversold: 20
+  roc_impulse:
+    period: 9
+    threshold: 1.0
+  cvd:
+    period: 14
+    slope_lookback: 10
+  atr_regime:
+    short: 14
+    long: 50
+    spike_ratio: 1.8
+  bb_squeeze_expand:
+    period: 20
+    stddev: 2.0
+    squeeze_threshold: 0.04
+    expand_threshold: 0.08
+  vwap_bias:
+    anchor: "session"
+    distance_threshold: 0.001
+  obv_flow:
+    slope_lookback: 10
+  htf_conflict:
+    ltf: "5m"
+    htf: "1h"
+    ema_period: 50
+  levels_daily_weekly:
+    distance_pct: 0.002
+  darvas_box:
+    pivot_lookback: 3
+    confirmation_bars: 2
+    close_breakout: true
+    min_bars_in_box: 5
+  astro_calendar:
+    new_full_window_hours: 24
+    aspects_enabled: true
+    orb_degrees: 3
+    planets: ["Mercury", "Venus", "Mars", "Jupiter", "Saturn"]
+  # New indicators
+  sma:
+    periods: [20, 50, 100, 200]
+  vwma:
+    period: 20
+  ichimoku:
+    tenkan_period: 9
+    kijun_period: 26
+    senkou_b_period: 52
+    displacement: 26
+  parabolic_sar:
+    start: 0.02
+    increment: 0.02
+    maximum: 0.2
+  cci:
+    period: 20
+    overbought: 100
+    oversold: -100
+  williams_r:
+    period: 14
+    overbought: -20
+    oversold: -80
+  mfi:
+    period: 14
+    overbought: 80
+    oversold: 20
+  cmf:
+    period: 20
+    strong_threshold: 0.1
+  volume_profile:
+    lookback: 100
+    num_bins: 50
+    value_area_pct: 0.70
+  volume_oscillator:
+    short_period: 5
+    long_period: 20
+  keltner_channels:
+    period: 20
+    atr_period: 10
+    multiplier: 1.5
+  donchian_channels:
+    period: 20
+  pivot_points:
+    type: "standard"
+    lookback: 24
+  fibonacci:
+    lookback: 50
+    retracement_levels: [0.236, 0.382, 0.5, 0.618, 0.786]
+    extension_levels: [1.0, 1.272, 1.618, 2.0, 2.618]
+  support_resistance:
+    lookback: 100
+    pivot_lookback: 3
+    tolerance_pct: 0.005
+    proximity_pct: 0.003
+  liquidity_zones:
+    lookback: 50
+    pivot_lookback: 3
+    sweep_tolerance_pct: 0.001
+
+risk_filters:
+  enable_astro_no_trade: true
+  enable_atr_spike: true
+  enable_htf_conflict: true
+
+ml:
+  enabled: false
+  lookback: 21
+  model_path: "assets/models/dummy.pkl"
+  inference_threshold: 0.6
+
+prompt_generator:
+  enabled: true
+  output_dir: "prompts"
+  interval_minutes: 60
+  lookback_candles: 21
+  auto_save: true
+
+pattern_detector:
+  enabled: true
+  lookback: 21
+
+csv:
+  enabled: true
+  base_path: "logs"
+  timeframe: "1m"
+  rotate_daily: true
+  include_indicators: [
+    "ema_bias", "market_structure", "smart_money", "adx", "supertrend", "sma", "vwma", "ichimoku", "parabolic_sar",
+    "rsi_state", "macd", "stochastic_rsi", "roc_impulse", "cci", "williams_r",
+    "cvd", "vwap_bias", "obv_flow", "mfi", "cmf", "volume_profile", "volume_oscillator",
+    "atr_regime", "bb_squeeze_expand", "keltner_channels", "donchian_channels",
+    "pivot_points", "fibonacci", "support_resistance", "liquidity_zones",
+    "darvas_box", "astro_calendar"
+  ]
+
+alerts:
+  enabled: false
+  sound_file: "assets/sounds/alert.wav"
+  min_confidence: 70
+
+daily_regime:
+  min_bars: 60
+  atr_period: 14
+  bb_period: 20
+  volume_ma: 20
+  thresholds:
+    aggressive: 1.6
+    moderate: 1.1
+    chill: 0.7
+  adjustments:
+    AGGRESSIVE:
+      alignment_multiplier: 1.15
+      no_trade_multiplier: 1.1
+    MODERATE:
+      alignment_multiplier: 1.0
+      no_trade_multiplier: 1.0
+    CHILL:
+      alignment_multiplier: 0.95
+      no_trade_multiplier: 0.9
+
+astro:
+  timezone: "Europe/Bucharest"
+  location:
+    lat: 44.4268
+    lon: 26.1025
+  use_external_provider: false
+  provider: ""
+  api_key: ""
+
+sentiment:
+  enabled: true
+  refresh_seconds: 300
+  long_short_period: "5m"
+  fear_greed_enabled: true
+  spot_trade_depth: 0

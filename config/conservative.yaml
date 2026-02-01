@@ -1,0 +1,20 @@
+﻿thresholds:
+  alignment: 70
+  wait_diff: 8
+  no_trade: 55
+
+indicator_weights:
+  rsi_state: 6
+  roc_impulse: 5
+  darvas_box: 5
+
+risk_filters:
+  enable_astro_no_trade: true
+  enable_atr_spike: true
+  enable_htf_conflict: true
+
+daily_regime:
+  adjustments:
+    CHILL:
+      alignment_multiplier: 0.9
+      no_trade_multiplier: 0.85

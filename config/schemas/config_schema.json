@@ -1,0 +1,34 @@
+﻿{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["app", "thresholds", "indicator_weights", "indicator_params"],
+  "properties": {
+    "app": {
+      "type": "object",
+      "required": ["symbol", "timeframes", "refresh_seconds"],
+      "properties": {
+        "symbol": {"type": "string"},
+        "symbols": {"type": "array", "items": {"type": "string"}},
+        "market_type": {"type": "string"},
+        "timeframes": {"type": "array", "items": {"type": "string"}},
+        "refresh_seconds": {"type": "number"}
+      }
+    },
+    "thresholds": {
+      "type": "object",
+      "properties": {
+        "alignment": {"type": "number"},
+        "wait_diff": {"type": "number"},
+        "no_trade": {"type": "number"}
+      }
+    },
+    "indicator_weights": {
+      "type": "object",
+      "additionalProperties": {"type": "number"}
+    },
+    "indicator_params": {
+      "type": "object",
+      "additionalProperties": {"type": "object"}
+    }
+  }
+}

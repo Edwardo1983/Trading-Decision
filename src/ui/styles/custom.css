@@ -1,0 +1,59 @@
+﻿@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap');
+
+:root {
+  --bg: #0f1218;
+  --bg2: #151b24;
+  --accent: #26d0ce;
+  --accent2: #1a8cff;
+  --text: #e6edf3;
+  --muted: #96a2b4;
+  --card: #161d27;
+  --success: #2ecc71;
+  --warning: #f1c40f;
+  --danger: #e74c3c;
+}
+
+html, body, [class*="stApp"] {
+  font-family: 'Space Grotesk', sans-serif;
+  color: var(--text);
+  background: radial-gradient(1200px 800px at 20% 10%, #1b2636 0%, var(--bg) 45%, #0b0f14 100%);
+}
+
+h1, h2, h3, h4 {
+  font-family: 'Space Grotesk', sans-serif;
+  letter-spacing: 0.5px;
+}
+
+.stMarkdown, .stCaption {
+  color: var(--muted);
+}
+
+div[data-testid="stMetric"] {
+  background: var(--card);
+  border: 1px solid #1f2937;
+  border-radius: 12px;
+  padding: 12px;
+}
+
+.stDataFrame {
+  border: 1px solid #1f2937;
+  border-radius: 12px;
+  background: var(--card);
+}
+
+.stButton button {
+  background: linear-gradient(135deg, var(--accent2), var(--accent));
+  color: #0b0f14;
+  border: none;
+  border-radius: 10px;
+  padding: 8px 14px;
+  font-weight: 600;
+}
+
+.stButton button:hover {
+  filter: brightness(1.05);
+}
+
+code {
+  font-family: 'JetBrains Mono', monospace;
+}
