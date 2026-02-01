@@ -12,8 +12,10 @@ from core.utils.config_loader import load_config
 from core.utils.ring_buffer import RingBuffer
 from core.utils.time_utils import now_tz
 from core.utils.sound_alert import play_sound
-from data.binance.mapper import ws_to_candle
+from data.binance.mapper import ws_to_candle as binance_ws_to_candle
 from data.binance.ws import BinanceWSClient
+from data.mexc.mapper import ws_to_candle as mexc_ws_to_candle
+from data.mexc.ws import MexcWSClient
 from data.sentiment import SentimentClient
 from data.provider import BinanceProvider, MexcProvider
 from data.export.csv_logger import CSVMinuteLogger
@@ -48,7 +50,7 @@ class Runner:
             tf: RingBuffer(self.buffer_size) for tf in self.timeframes
         }
 
-        self._ws_client: Optional[BinanceWSClient] = None
+        self._ws_client: Optional[object] = None
         self._ws_task: Optional[asyncio.Task] = None
 
         data_cfg = config.get("data", {})
@@ -192,14 +194,20 @@ class Runner:
         ws_tf = app.get("ws_timeframe", "1m")
         if ws_tf not in self.timeframes:
             return
+        provider_name = getattr(self.provider, "name", "binance")
+        reconnect = self.config.get("data", {}).get("ws_reconnect_seconds", 5)
+        if provider_name == "mexc":
+            self._ws_client = MexcWSClient(self.symbol, ws_tf, reconnect_seconds=reconnect)
+            self._ws_task = asyncio.create_task(self._ws_listener(ws_tf, provider_name))
+            return
         market_type = self.config.get("app", {}).get("market_type", "spot")
         self._ws_client = BinanceWSClient(
             self.symbol,
             ws_tf,
-            reconnect_seconds=self.config.get("data", {}).get("ws_reconnect_seconds", 5),
+            reconnect_seconds=reconnect,
             market_type=market_type,
         )
-        self._ws_task = asyncio.create_task(self._ws_listener(ws_tf))
+        self._ws_task = asyncio.create_task(self._ws_listener(ws_tf, "binance"))
 
     async def _stop_ws(self) -> None:
         if self._ws_client:
@@ -207,16 +215,29 @@ class Runner:
         if self._ws_task:
             self._ws_task.cancel()
 
-    async def _ws_listener(self, timeframe: str) -> None:
+    async def _ws_listener(self, timeframe: str, provider_name: str) -> None:
         if not self._ws_client:
             return
+        if provider_name == "mexc":
+            async for payload in self._ws_client.listen():
+                candle = mexc_ws_to_candle(payload)
+                if candle is None:
+                    continue
+                buffer = self.buffers[timeframe]
+                last = buffer.last()
+                if last and candle.timestamp == last.timestamp:
+                    buffer.replace_last(candle)
+                else:
+                    buffer.append(candle)
+                    self.event_bus.publish("info", "WS candle update", {"tf": timeframe, "provider": "mexc"})
+            return
         async for payload in self._ws_client.listen():
-            candle = ws_to_candle(payload)
+            candle = binance_ws_to_candle(payload)
             # Binance marks closed candles with x=true
             closed = payload.get("k", {}).get("x", False)
             if closed:
                 self.buffers[timeframe].append(candle)
-                self.event_bus.publish("info", "WS candle closed", {"tf": timeframe})
+                self.event_bus.publish("info", "WS candle closed", {"tf": timeframe, "provider": "binance"})
 
     async def _compute_cycle(self) -> None:
         candles_by_tf = {tf: buffer.to_list() for tf, buffer in self.buffers.items()}

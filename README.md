@@ -90,6 +90,7 @@ Sectiuni cheie:
 ## Note importante
 - Sentiment futures functioneaza doar cu `market_type: futures`
 - Pentru spot folosim proxy buy/sell ratio din 24h ticker + optional recent trades
+- MEXC WS actualizeaza candle-ul curent in timp real (fara flag explicit de inchidere)
 - Astro este experimental (nu predictor validat)
 
 ## Teste
@@ -191,6 +192,7 @@ Key sections:
 ## Notes
 - Futures sentiment works only with `market_type: futures`
 - Spot uses buy/sell proxy from 24h ticker + optional recent trades
+- MEXC WS updates the current candle in real time (no explicit close flag)
 - Astro is experimental (not a validated predictor)
 
 ## Tests

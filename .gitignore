@@ -11,7 +11,7 @@ logs/
 .pytest_cache/
 .mypy_cache/
 promt/
-.env.*
+.env
 .vscode/
 .idea/
 dist/

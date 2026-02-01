@@ -13,6 +13,11 @@ class RingBuffer(Generic[T]):
     def append(self, item: T) -> None:
         self._data.append(item)
 
+    def replace_last(self, item: T) -> None:
+        if self._data:
+            self._data.pop()
+        self._data.append(item)
+
     def extend(self, items: Iterable[T]) -> None:
         self._data.extend(items)
 

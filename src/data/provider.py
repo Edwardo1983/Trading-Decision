@@ -62,7 +62,7 @@ class MexcProvider:
 
     def __init__(self, api_key: str = "", api_secret: str = ""):
         self.market_type = "spot"
-        self.supports_ws = False
+        self.supports_ws = True
         self.client = MexcRESTClient(api_key, api_secret)
 
     async def ping(self) -> bool:
