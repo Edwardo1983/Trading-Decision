@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import importlib
 import pkgutil
@@ -31,7 +31,8 @@ class IndicatorRegistry:
         return sorted(cls._registry.keys())
 
 
-def load_indicators() -> None:
+def load_indicators() -> Dict[str, Type[IndicatorBase]]:
     pkg = importlib.import_module("indicators")
     for _, module_name, _ in pkgutil.walk_packages(pkg.__path__, pkg.__name__ + "."):
         importlib.import_module(module_name)
+    return IndicatorRegistry._registry.copy()

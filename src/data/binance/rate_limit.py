@@ -1,4 +1,4 @@
-﻿class RateLimiter:
+class RateLimiter:
     def __init__(self):
         self.weight = 0
 
