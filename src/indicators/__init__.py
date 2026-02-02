@@ -1,1 +1,1 @@
-﻿# Indicator package
+# Indicator package
