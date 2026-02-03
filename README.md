@@ -1,4 +1,4 @@
-﻿# Trading Decision Dashboard
+# Trading Decision Dashboard
 
 RO
 ## Descriere
