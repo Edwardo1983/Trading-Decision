@@ -32,6 +32,7 @@ class IndicatorRegistry:
 
 
 def load_indicators() -> Dict[str, Type[IndicatorBase]]:
+    """Load all indicators and return the registry dictionary."""
     pkg = importlib.import_module("indicators")
     for _, module_name, _ in pkgutil.walk_packages(pkg.__path__, pkg.__name__ + "."):
         importlib.import_module(module_name)
