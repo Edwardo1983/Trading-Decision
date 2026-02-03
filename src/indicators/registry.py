@@ -35,4 +35,4 @@ def load_indicators() -> Dict[str, Type[IndicatorBase]]:
     pkg = importlib.import_module("indicators")
     for _, module_name, _ in pkgutil.walk_packages(pkg.__path__, pkg.__name__ + "."):
         importlib.import_module(module_name)
-    return IndicatorRegistry._registry.copy()
+    return IndicatorRegistry._registry
