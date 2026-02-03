@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from collections import deque
 from typing import Deque, Generic, Iterable, Iterator, List, Optional, TypeVar

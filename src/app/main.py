@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from core.logger import setup_logging
 from core.utils.config_loader import load_config
