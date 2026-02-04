@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import asyncio
 import json
@@ -33,7 +33,15 @@ class BinanceWSClient:
                     async for msg in ws:
                         if not self._running:
                             break
-                        yield json.loads(msg)
+                        try:
+                            payload = json.loads(msg)
+                        except json.JSONDecodeError as exc:
+                            logger.warning("WS message decode error: %s", exc)
+                            continue
+                        if isinstance(payload, dict):
+                            yield payload
+                        else:
+                            logger.warning("WS message not a JSON object: %s", payload)
             except Exception as exc:
                 logger.warning("WS disconnected: %s", exc)
                 await asyncio.sleep(self.reconnect_seconds)

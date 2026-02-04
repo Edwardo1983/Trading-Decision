@@ -1,4 +1,4 @@
-﻿class ConfigError(Exception):
+class ConfigError(Exception):
     pass
 
 

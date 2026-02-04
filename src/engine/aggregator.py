@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import Dict, List
@@ -53,7 +53,11 @@ def aggregate(indicators: List[IndicatorResult], config: Dict, market_regime: Ma
             final_state = SignalState.BUY if buy_pct > sell_pct else SignalState.SELL
             reason = "buy dominance" if buy_pct > sell_pct else "sell dominance"
 
-    alignment = max(buy_pct, sell_pct) >= alignment_threshold and final_state in (SignalState.BUY, SignalState.SELL)
+    alignment = False
+    if final_state == SignalState.BUY:
+        alignment = buy_pct >= alignment_threshold
+    elif final_state == SignalState.SELL:
+        alignment = sell_pct >= alignment_threshold
 
     max_pct = max(buy_pct, sell_pct)
     if max_pct >= 80:

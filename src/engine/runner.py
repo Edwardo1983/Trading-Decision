@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import asyncio
 import logging
@@ -247,6 +247,8 @@ class Runner:
                 self.state.sentiment = await self.sentiment_client.refresh(self.symbol)
             except Exception as exc:
                 logger.debug("Sentiment refresh failed: %s", exc)
+        if self.state.sentiment:
+            candles_by_tf["sentiment"] = [self.state.sentiment]
         for indicator in self.indicators:
             try:
                 results.append(indicator.compute(candles_by_tf))

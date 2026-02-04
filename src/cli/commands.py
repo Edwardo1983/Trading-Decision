@@ -1,8 +1,9 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import argparse
 import logging
 import os
+import sys
 from pathlib import Path
 
 from app.main import create_runner
@@ -60,7 +61,16 @@ def cmd_validate_config() -> None:
         print(f"Config error: {exc}")
 
 
+def _ensure_python_version(min_version: tuple[int, int] = (3, 12)) -> None:
+    if sys.version_info < min_version:
+        min_version_str = ".".join(str(item) for item in min_version)
+        raise SystemExit(
+            f"Python {min_version_str}+ is required. Current version: {sys.version.split()[0]}."
+        )
+
+
 def main() -> None:
+    _ensure_python_version()
     parser = argparse.ArgumentParser(description="Trading Decision Dashboard CLI")
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("start")

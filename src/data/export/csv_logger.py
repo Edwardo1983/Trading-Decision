@@ -1,6 +1,7 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import csv
+import json
 import logging
 from datetime import date
 from pathlib import Path
@@ -63,6 +64,12 @@ class CSVMinuteLogger:
         ])
         return base
 
+    @staticmethod
+    def _serialize_indicator_value(value: object) -> object:
+        if isinstance(value, (dict, list)):
+            return json.dumps(value, separators=(",", ":"), sort_keys=True)
+        return value
+
     def log(
         self,
         symbol: str,
@@ -88,7 +95,7 @@ class CSVMinuteLogger:
         }
         for ind in indicators:
             if ind.name in include_set:
-                row[f"ind_{ind.name}"] = ind.value
+                row[f"ind_{ind.name}"] = self._serialize_indicator_value(ind.value)
         if aggregate:
             row.update(
                 {

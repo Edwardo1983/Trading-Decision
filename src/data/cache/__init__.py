@@ -1,3 +1,3 @@
-﻿from core.utils.ring_buffer import RingBuffer
+from core.utils.ring_buffer import RingBuffer
 
 __all__ = ["RingBuffer"]

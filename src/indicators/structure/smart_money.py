@@ -33,6 +33,8 @@ class SmartMoneyIndicator(IndicatorBase):
         ob_impulse_mult = float(self.params.get("ob_impulse_mult", 1.8))
         min_gap_pct = float(self.params.get("min_gap_pct", 0.0005))
         sweep_lookback = int(self.params.get("sweep_lookback", 20))
+        ob_confirm_bars = int(self.params.get("ob_confirm_bars", 5))
+        fvg_volume_mult = float(self.params.get("fvg_volume_mult", 1.2))
 
         if len(candles) < max(lookback, atr_period * 3):
             return IndicatorResult(self.name, self.category, self.timeframes_required[0], {}, SignalState.NEUTRAL, 0, "insufficient data", self.weight)
@@ -50,17 +52,17 @@ class SmartMoneyIndicator(IndicatorBase):
         bearish_ob: Optional[Dict[str, float]] = None
         impulse_threshold = atr_now * ob_impulse_mult if atr_now else 0.0
 
-        for i in range(len(window) - 2, 2, -1):
+        for i in range(len(window) - 2 - ob_confirm_bars, 2, -1):
             c = window[i]
-            next_close = window[min(i + 2, len(window) - 1)].close
+            next_close = window[min(i + ob_confirm_bars, len(window) - 1)].close
             # bullish OB: last bearish candle before strong up move
             if c.close < c.open and next_close - c.high > impulse_threshold:
                 bullish_ob = {"top": c.high, "bottom": c.low, "index": i}
                 break
 
-        for i in range(len(window) - 2, 2, -1):
+        for i in range(len(window) - 2 - ob_confirm_bars, 2, -1):
             c = window[i]
-            next_close = window[min(i + 2, len(window) - 1)].close
+            next_close = window[min(i + ob_confirm_bars, len(window) - 1)].close
             # bearish OB: last bullish candle before strong down move
             if c.close > c.open and c.low - next_close > impulse_threshold:
                 bearish_ob = {"top": c.high, "bottom": c.low, "index": i}
@@ -71,13 +73,15 @@ class SmartMoneyIndicator(IndicatorBase):
         bearish_fvg: Optional[Dict[str, float]] = None
         if len(window) >= 3:
             c1, c2, c3 = window[-3], window[-2], window[-1]
+            avg_volume = sum(c.volume for c in window) / len(window)
+            volume_confirmed = c3.volume >= avg_volume * fvg_volume_mult if avg_volume else True
             if c1.high < c3.low:
                 gap = (c3.low - c1.high) / max(c1.high, 1e-9)
-                if gap >= min_gap_pct:
+                if gap >= min_gap_pct and volume_confirmed:
                     bullish_fvg = {"low": c1.high, "high": c3.low, "gap_pct": gap}
             if c1.low > c3.high:
                 gap = (c1.low - c3.high) / max(c3.high, 1e-9)
-                if gap >= min_gap_pct:
+                if gap >= min_gap_pct and volume_confirmed:
                     bearish_fvg = {"low": c3.high, "high": c1.low, "gap_pct": gap}
 
         # Liquidity sweeps
