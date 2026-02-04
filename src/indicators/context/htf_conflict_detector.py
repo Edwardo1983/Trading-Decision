@@ -33,9 +33,39 @@ class HTFConflictDetector(IndicatorBase):
         ltf_trend = _trend(candles_by_tf.get(ltf, []), period)
         htf_trend = _trend(candles_by_tf.get(htf, []), period)
 
-        conflict = (ltf_trend == "bullish" and htf_trend == "bearish") or (ltf_trend == "bearish" and htf_trend == "bullish")
-        state = SignalState.NO_TRADE if conflict else SignalState.NEUTRAL
-        reason = "HTF conflict" if conflict else "no conflict"
-        confidence = 85.0 if conflict else 20.0
-        value = {"ltf": ltf_trend, "htf": htf_trend, "conflict": conflict}
-        return IndicatorResult(self.name, self.category, ltf, value, state, confidence, reason, self.weight, {"conflict": conflict})
+        strong_conflict = (
+            ltf_trend in ("bullish", "bearish")
+            and htf_trend in ("bullish", "bearish")
+            and ltf_trend != htf_trend
+        )
+        weak_conflict = (
+            not strong_conflict
+            and ltf_trend != htf_trend
+            and (ltf_trend == "neutral" or htf_trend == "neutral")
+        )
+
+        if strong_conflict:
+            state = SignalState.NO_TRADE
+            reason = "strong HTF conflict"
+            confidence = 80.0
+        elif weak_conflict:
+            state = SignalState.NEUTRAL
+            reason = "weak HTF conflict"
+            confidence = 50.0
+        else:
+            state = SignalState.NEUTRAL
+            reason = "no conflict"
+            confidence = 20.0
+
+        value = {"ltf": ltf_trend, "htf": htf_trend, "conflict": strong_conflict, "weak_conflict": weak_conflict}
+        return IndicatorResult(
+            self.name,
+            self.category,
+            ltf,
+            value,
+            state,
+            confidence,
+            reason,
+            self.weight,
+            {"conflict": strong_conflict, "weak_conflict": weak_conflict},
+        )

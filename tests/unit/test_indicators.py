@@ -316,3 +316,27 @@ def test_pattern_detector():
     summary = detector.get_summary(candles)
     assert "patterns" in summary
     assert "bias" in summary
+
+
+def test_pattern_detector_indicator():
+    from indicators.price_action.pattern_detector import PatternDetectorIndicator
+    candles = make_candles([100, 101, 99, 102, 98, 103, 100])
+    ind = PatternDetectorIndicator({"lookback": 10}, 1.0)
+    res = ind.compute({"1m": candles})
+    assert res.state in (SignalState.BUY, SignalState.SELL, SignalState.NEUTRAL)
+
+
+def test_sentiment_indicator():
+    from indicators.context.sentiment_indicator import SentimentIndicator
+    sentiment = {"fear_greed": 20, "long_short_ratio": 1.0, "funding_rate": -0.002}
+    ind = SentimentIndicator({}, 1.0)
+    res = ind.compute({"sentiment": [sentiment]})
+    assert res.state in (SignalState.BUY, SignalState.SELL, SignalState.NEUTRAL)
+
+
+def test_divergence_detector():
+    from indicators.momentum.divergence_detector import DivergenceDetector
+    candles = make_candles([100 + (i % 5) for i in range(120)])
+    ind = DivergenceDetector({"lookback": 60}, 1.0)
+    res = ind.compute({"1m": candles})
+    assert res.state in (SignalState.BUY, SignalState.SELL, SignalState.NEUTRAL)

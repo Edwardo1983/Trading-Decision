@@ -135,5 +135,26 @@ class AstroCalendarIndicator(IndicatorBase):
             "aspects": aspects,
             "location": location,
         }
+        state = SignalState.NEUTRAL
+        confidence = 20.0
         reason = "experimental astro context"
-        return IndicatorResult(self.name, self.category, "1m", value, SignalState.NEUTRAL, 30.0, reason, self.weight, {"astro_window": is_new_window or is_full_window})
+        if is_new_window:
+            state = SignalState.BUY
+            confidence = 40.0
+            reason = "new moon bias"
+        elif is_full_window:
+            state = SignalState.SELL
+            confidence = 40.0
+            reason = "full moon bias"
+
+        return IndicatorResult(
+            self.name,
+            self.category,
+            "1m",
+            value,
+            state,
+            confidence,
+            reason,
+            self.weight,
+            {"astro_window": is_new_window or is_full_window},
+        )
