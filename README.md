@@ -13,7 +13,7 @@ Sistem de suport decizional pentru trading crypto (BTC/altcoins). Agrega indicat
 - Sentiment: futures (funding/OI/long-short) + spot (buy/sell ratio proxy)
 - UI Streamlit cu Start/Stop, Signal Board (live + CSV), tabel clasic, sumar, evenimente
 - CSV logging la minut, rotatie zilnica, plus stari/conditii per indicator (`sig_*`, `conf_*`, `reason_*`)
-- ML placeholder (lookback 21 candles)
+- ML advisory real (logistic regression) + calibrare praguri + backtesting walk-forward
 - Generator prompt automat pentru Claude/Codex (fisier text in `prompts/<SYMBOL>/`)
 - Astro calendar experimental (Moon phases + aspects)
 
@@ -77,11 +77,19 @@ python -m app validate-config
 Comenzile se ruleaza din folderul `main/`.
 `start` ruleaza continuu; `stop` se da dintr-un al doilea terminal (nu doar `Ctrl+C`).
 
+## ML Training + Backtest
+Ruleaza din `main/`:
+```
+python scripts/train_model.py --symbol BTCUSDT
+python scripts/backtest.py --symbol BTCUSDT
+python scripts/backtest.py --symbol BTCUSDT --walk-forward --window-size 800 --step-size 100
+```
+
 ## Prompt pentru Claude/Codex
 - Config: `prompt_generator` in `config/default.yaml`
 - Prompt generat automat in loop (prima generatie imediat, apoi la `interval_minutes`)
-- Locatie implicita: `prompts/<SYMBOL>/latest_prompt.txt`
-- Arhiva: `prompts/<SYMBOL>/archive/prompt_<SYMBOL>_YYYYMMDD_HHMM.txt`
+- Locatie implicita: `prompts/<SYMBOL>/latest_prompt_claude.txt`, `prompts/<SYMBOL>/latest_prompt_codex.txt` (+ `latest_prompt.txt`)
+- Arhiva: `prompts/<SYMBOL>/archive/prompt_<TARGET>_<SYMBOL>_YYYYMMDD_HHMM.txt`
 - Raspunsul AI (daca este parsat manual) se salveaza in `prompts/<SYMBOL>/latest_analysis.json`
 
 ## Configurare
@@ -102,6 +110,8 @@ Sectiuni cheie:
 - Pentru spot folosim proxy buy/sell ratio din 24h ticker + optional recent trades
 - MEXC WS actualizeaza candle-ul curent in timp real (fara flag explicit de inchidere)
 - In UI, modul `Signal Board (CSV Logs)` afiseaza ultimul rand din CSV pe simbol
+- Astro este context experimental (implicit NEUTRAL; optional bias directional din config)
+- Darvas foloseste confirmare explicita (`confirmation_bars`) + suport volum/volatilitate
 - Astro este experimental (nu predictor validat)
 
 ## Teste
@@ -126,7 +136,7 @@ Decision-support system for crypto trading (BTC/altcoins). Aggregates technical 
 - Sentiment: futures (funding/OI/long-short) + spot (buy/sell proxy)
 - Streamlit UI with Start/Stop, Signal Board (live + CSV), classic table, summary, events
 - Minute CSV logging with daily rotation, plus per-indicator state/condition (`sig_*`, `conf_*`, `reason_*`)
-- ML placeholder (21-candle lookback)
+- Real ML advisory (logistic regression) + threshold calibration + walk-forward backtesting
 - Automatic Claude/Codex prompt generator (`prompts/<SYMBOL>/`)
 - Experimental astro calendar (Moon phases + aspects)
 
@@ -190,11 +200,19 @@ python -m app validate-config
 Run CLI commands from the `main/` folder.
 `start` runs continuously; use `stop` from a second terminal (not only `Ctrl+C`).
 
+## ML Training + Backtest
+Run from `main/`:
+```
+python scripts/train_model.py --symbol BTCUSDT
+python scripts/backtest.py --symbol BTCUSDT
+python scripts/backtest.py --symbol BTCUSDT --walk-forward --window-size 800 --step-size 100
+```
+
 ## Claude/Codex Prompt
 - Config block: `prompt_generator` in `config/default.yaml`
 - Prompt is auto-generated in the runner loop (first generation immediately, then every `interval_minutes`)
-- Default path: `prompts/<SYMBOL>/latest_prompt.txt`
-- Archive path: `prompts/<SYMBOL>/archive/prompt_<SYMBOL>_YYYYMMDD_HHMM.txt`
+- Default paths: `prompts/<SYMBOL>/latest_prompt_claude.txt`, `prompts/<SYMBOL>/latest_prompt_codex.txt` (+ `latest_prompt.txt`)
+- Archive path: `prompts/<SYMBOL>/archive/prompt_<TARGET>_<SYMBOL>_YYYYMMDD_HHMM.txt`
 - Parsed AI output (manual paste flow) is saved to `prompts/<SYMBOL>/latest_analysis.json`
 
 ## Configuration
@@ -215,6 +233,8 @@ Key sections:
 - Spot uses buy/sell proxy from 24h ticker + optional recent trades
 - MEXC WS updates the current candle in real time (no explicit close flag)
 - In UI, `Signal Board (CSV Logs)` displays the latest CSV row per symbol
+- Astro is experimental context (default NEUTRAL; optional directional bias in config)
+- Darvas uses explicit breakout confirmation (`confirmation_bars`) with volume/volatility support
 - Astro is experimental (not a validated predictor)
 
 ## Tests

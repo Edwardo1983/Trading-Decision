@@ -65,6 +65,11 @@ class CSVMinuteLogger:
             "trade_buy_volume",
             "trade_sell_volume",
             "price_change_pct",
+            "ml_label",
+            "ml_confidence",
+            "ml_probability_up",
+            "ml_buy_threshold",
+            "ml_sell_threshold",
             "buy_score",
             "sell_score",
             "no_trade_score",
@@ -110,6 +115,7 @@ class CSVMinuteLogger:
         include_indicators: Iterable[str],
         market_regime: MarketRegime,
         sentiment: Optional[Dict[str, float]] = None,
+        ml_result: Optional[Dict[str, object]] = None,
     ) -> None:
         include_set = set(include_indicators)
         file_path = self._ensure_file(symbol)
@@ -179,6 +185,26 @@ class CSVMinuteLogger:
                     "trade_buy_volume": None,
                     "trade_sell_volume": None,
                     "price_change_pct": None,
+                }
+            )
+        if ml_result:
+            row.update(
+                {
+                    "ml_label": ml_result.get("label"),
+                    "ml_confidence": ml_result.get("confidence"),
+                    "ml_probability_up": ml_result.get("probability_up"),
+                    "ml_buy_threshold": ml_result.get("buy_threshold"),
+                    "ml_sell_threshold": ml_result.get("sell_threshold"),
+                }
+            )
+        else:
+            row.update(
+                {
+                    "ml_label": None,
+                    "ml_confidence": None,
+                    "ml_probability_up": None,
+                    "ml_buy_threshold": None,
+                    "ml_sell_threshold": None,
                 }
             )
 

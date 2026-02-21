@@ -123,7 +123,11 @@ class AstroCalendarIndicator(IndicatorBase):
         orb = float(self.params.get("orb_degrees", 3))
         planets = list(self.params.get("planets", []))
         aspects = self._aspect_list(now, orb, planets) if aspects_enabled else []
+        directional_bias = bool(self.params.get("allow_directional_bias", False))
 
+        astro_window = is_new_window or is_full_window
+        elevated_aspects = len(aspects) >= int(self.params.get("risk_aspect_count", 2))
+        risk_tag = "ELEVATED" if astro_window or elevated_aspects else "NORMAL"
         value = {
             "phase_angle": phase_angle,
             "illumination": illumination,
@@ -133,19 +137,24 @@ class AstroCalendarIndicator(IndicatorBase):
             "is_new_window": is_new_window,
             "is_full_window": is_full_window,
             "aspects": aspects,
+            "risk_tag": risk_tag,
             "location": location,
         }
+        # Prompt requirement: astro should stay primarily a context tag.
         state = SignalState.NEUTRAL
-        confidence = 20.0
-        reason = "experimental astro context"
-        if is_new_window:
-            state = SignalState.BUY
-            confidence = 40.0
-            reason = "new moon bias"
-        elif is_full_window:
-            state = SignalState.SELL
-            confidence = 40.0
-            reason = "full moon bias"
+        confidence = 20.0 if not astro_window else 35.0
+        reason = "experimental astro context tag"
+        if astro_window:
+            reason = f"experimental astro window ({'new' if is_new_window else 'full'})"
+        if elevated_aspects:
+            reason = f"{reason}; aspects active"
+        if directional_bias:
+            if is_new_window:
+                state = SignalState.BUY
+                reason = "new moon directional bias (experimental)"
+            elif is_full_window:
+                state = SignalState.SELL
+                reason = "full moon directional bias (experimental)"
 
         return IndicatorResult(
             self.name,
@@ -156,5 +165,10 @@ class AstroCalendarIndicator(IndicatorBase):
             confidence,
             reason,
             self.weight,
-            {"astro_window": is_new_window or is_full_window},
+            {
+                "astro_window": astro_window,
+                "risk_tag": risk_tag,
+                "experimental": True,
+                "directional_bias_enabled": directional_bias,
+            },
         )

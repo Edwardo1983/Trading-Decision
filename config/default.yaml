@@ -162,6 +162,8 @@ indicator_params:
     new_full_window_hours: 24
     aspects_enabled: true
     orb_degrees: 3
+    risk_aspect_count: 2
+    allow_directional_bias: false
     planets: ["Mercury", "Venus", "Mars", "Jupiter", "Saturn"]
   # New indicators
   sentiment:
@@ -244,14 +246,23 @@ risk_filters:
 ml:
   enabled: false
   lookback: 21
-  model_path: "assets/models/dummy.pkl"
-  inference_threshold: 0.6
+  model_path: "assets/models/ml_signal_model.npz"
+  target_lookahead: 5
+  target_threshold: 0.0015
+  buy_threshold: 0.62
+  sell_threshold: 0.38
+  min_trades_for_calibration: 30
+  learning_rate: 0.05
+  l2: 0.001
+  epochs: 700
+  event_confidence: 0.7
 
 prompt_generator:
   enabled: true
   output_dir: "prompts"
   interval_minutes: 60
   lookback_candles: 21
+  targets: ["claude", "codex"]
   auto_save: true
 
 pattern_detector:

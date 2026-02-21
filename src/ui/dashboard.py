@@ -106,6 +106,13 @@ def run_app():
         st.session_state.runner.stop()
         st.session_state.running = False
 
+    live_dot = "●" if st.session_state.running else "○"
+    live_label = "LIVE" if st.session_state.running else "IDLE"
+    active_tf = ",".join(timeframes) if timeframes else "-"
+    st.markdown(
+        f"**[{live_label} {live_dot}]** Asset(s): `{','.join(symbols)}` | TF: `{active_tf}` | Refresh: `{int(refresh)}s`"
+    )
+
     runner_obj = st.session_state.runner
     multi_mode = hasattr(runner_obj, "get_snapshots")
     if multi_mode:
@@ -152,6 +159,8 @@ def run_app():
                     aggregate=snapshot.aggregate,
                     market_regime=snapshot.market_regime,
                     sentiment=snapshot.sentiment,
+                    last_ohlcv=snapshot.last_ohlcv,
+                    ml_result=snapshot.ml_result,
                 )
                 st.subheader("Events")
                 render_events(snapshot.events)
@@ -166,7 +175,7 @@ def run_app():
 
                 with right:
                     st.subheader("Context")
-                    render_context(snapshot.indicators, snapshot.market_regime, snapshot.sentiment)
+                    render_context(snapshot.indicators, snapshot.market_regime, snapshot.sentiment, snapshot.ml_result)
 
                     st.subheader("Events")
                     render_events(snapshot.events)

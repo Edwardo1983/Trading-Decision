@@ -160,6 +160,8 @@ def test_darvas_box():
     ind = DarvasBoxIndicator({"pivot_lookback": 1, "min_bars_in_box": 2}, 1.0)
     res = ind.compute({"1m": candles})
     assert "box_top" in res.value
+    assert "breakout_confirmed" in res.value
+    assert "confirmation_bars" in res.value
 
 
 def test_astro_calendar_optional():
@@ -170,9 +172,10 @@ def test_astro_calendar_optional():
     if not eph.exists():
         pytest.skip("Ephemeris not present")
     from indicators.context.astro_calendar import AstroCalendarIndicator
-    ind = AstroCalendarIndicator({"aspects_enabled": False}, 1.0)
+    ind = AstroCalendarIndicator({"aspects_enabled": False, "allow_directional_bias": False}, 1.0)
     res = ind.compute({"1m": []})
     assert res.state == SignalState.NEUTRAL
+    assert res.meta.get("experimental") is True
 
 
 # New indicator tests

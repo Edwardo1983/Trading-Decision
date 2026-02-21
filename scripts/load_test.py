@@ -1,8 +1,14 @@
 from __future__ import annotations
 
 import random
+import sys
 import tracemalloc
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+SRC_DIR = Path(__file__).resolve().parents[1] / "src"
+if str(SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(SRC_DIR))
 
 from core.utils.config_loader import load_config
 from core.utils.ring_buffer import RingBuffer

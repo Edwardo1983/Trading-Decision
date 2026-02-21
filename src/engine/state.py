@@ -16,3 +16,5 @@ class RunnerState:
     market_regime: MarketRegime = MarketRegime.UNKNOWN
     sentiment: Dict[str, Any] = field(default_factory=dict)
     errors: List[str] = field(default_factory=list)
+    ml_result: Dict[str, Any] = field(default_factory=dict)
+    last_ohlcv: Dict[str, float] = field(default_factory=dict)

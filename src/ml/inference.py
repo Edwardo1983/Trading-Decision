@@ -1,17 +1,33 @@
 from __future__ import annotations
 
-from typing import Dict, List
+from pathlib import Path
+from typing import List
 
-from core.models import Candle, IndicatorResult
-from ml.features import build_features
-from ml.models import DummyModel, MLResult
+import numpy as np
+
+from core.models import IndicatorResult
+from ml.features import build_live_feature_vector
+from ml.models import LogisticSignalModel, MLResult
 
 
-def run_inference(
-    candles_by_tf: Dict[str, List[Candle]],
+def load_model_or_none(model_path: str | Path) -> LogisticSignalModel | None:
+    try:
+        return LogisticSignalModel.load(model_path)
+    except Exception:
+        return None
+
+
+def run_live_inference(
+    closes: List[float],
     indicators: List[IndicatorResult],
+    indicator_names: List[str],
+    model: LogisticSignalModel,
     lookback: int = 21,
 ) -> MLResult:
-    model = DummyModel()
-    features = build_features(candles_by_tf, indicators, lookback=lookback)
-    return model.predict(features)
+    features = build_live_feature_vector(
+        closes=closes,
+        indicators=indicators,
+        indicator_names=indicator_names,
+        lookback=lookback,
+    )
+    return model.predict(np.asarray(features, dtype=np.float64))

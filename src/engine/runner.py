@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional
 
 from core.models import Candle, EngineState, IndicatorResult, MarketRegime, RunnerSnapshot
 from core.utils.config_loader import load_config
+from core.utils.paths import project_root
 from core.utils.ring_buffer import RingBuffer
 from core.utils.time_utils import now_tz
 from core.utils.sound_alert import play_sound
@@ -23,6 +24,7 @@ from engine.daily_regime import classify_regime
 from engine.event_bus import EventBus
 from engine.state import RunnerState
 from indicators.registry import IndicatorRegistry, load_indicators
+from ml.inference import load_model_or_none, run_live_inference
 
 logger = logging.getLogger(__name__)
 
@@ -89,8 +91,11 @@ class Runner:
         )
 
         csv_cfg = config.get("csv", {})
+        csv_base_path = Path(str(csv_cfg.get("base_path", "logs")))
+        if not csv_base_path.is_absolute():
+            csv_base_path = project_root() / csv_base_path
         self.csv_logger = CSVMinuteLogger(
-            base_path=csv_cfg.get("base_path", "logs"),
+            base_path=str(csv_base_path),
             timezone=self.timezone,
             rotate_daily=bool(csv_cfg.get("rotate_daily", True)),
         )
@@ -103,9 +108,26 @@ class Runner:
             if PromptGenerator is None:
                 logger.warning("Prompt generator enabled, but PromptGenerator could not be imported.")
             else:
-                output_dir = Path(str(prompt_cfg.get("output_dir", "prompts"))) / self.symbol
+                output_dir = Path(str(prompt_cfg.get("output_dir", "prompts")))
+                if not output_dir.is_absolute():
+                    output_dir = project_root() / output_dir
+                output_dir = output_dir / self.symbol
                 lookback = int(prompt_cfg.get("lookback_candles", 21))
-                self.prompt_generator = PromptGenerator(output_dir=str(output_dir), lookback=lookback)
+                targets = list(prompt_cfg.get("targets", ["claude", "codex"]))
+                self.prompt_generator = PromptGenerator(output_dir=str(output_dir), lookback=lookback, targets=targets)
+
+        ml_cfg = config.get("ml", {})
+        self.ml_enabled = bool(ml_cfg.get("enabled", False))
+        self.ml_lookback = int(ml_cfg.get("lookback", 21))
+        self.ml_event_threshold = float(ml_cfg.get("event_confidence", 0.7))
+        self.ml_model_path = Path(str(ml_cfg.get("model_path", "assets/models/ml_signal_model.npz")))
+        if not self.ml_model_path.is_absolute():
+            self.ml_model_path = project_root() / self.ml_model_path
+        self.ml_indicator_names = list(config.get("csv", {}).get("include_indicators", []))
+        if not self.ml_indicator_names:
+            self.ml_indicator_names = sorted(config.get("indicator_weights", {}).keys())
+        self.ml_model = load_model_or_none(self.ml_model_path) if self.ml_enabled else None
+        self._ml_missing_warned = False
 
     def start(self) -> None:
         if self._running:
@@ -316,6 +338,7 @@ class Runner:
         self.state.indicators = results
         self.state.aggregate = agg
         self.state.market_regime = market_regime
+        self.state.ml_result = self._maybe_run_ml(candles_by_tf, results)
 
         if agg.alignment:
             self.event_bus.publish("info", "Alignment reached", {"state": agg.final_state.value})
@@ -326,29 +349,75 @@ class Runner:
             if max_conf >= float(alerts.get("min_confidence", 70)):
                 play_sound(alerts.get("sound_file", ""))
 
-        # CSV logging
-        csv_cfg = self.config.get("csv", {})
-        if csv_cfg.get("enabled", True) and candles_by_tf.get(base_tf):
+        if candles_by_tf.get(base_tf):
             last = candles_by_tf[base_tf][-1]
-            ohlcv = {
+            self.state.last_ohlcv = {
                 "open": last.open,
                 "high": last.high,
                 "low": last.low,
                 "close": last.close,
                 "volume": last.volume,
             }
+
+        # CSV logging
+        csv_cfg = self.config.get("csv", {})
+        if csv_cfg.get("enabled", True) and candles_by_tf.get(base_tf):
             self.csv_logger.log(
                 symbol=self.symbol,
                 timeframe=base_tf,
-                ohlcv=ohlcv,
+                ohlcv=self.state.last_ohlcv,
                 indicators=results,
                 aggregate=agg,
                 include_indicators=csv_cfg.get("include_indicators", []),
                 market_regime=market_regime,
                 sentiment=self.state.sentiment,
+                ml_result=self.state.ml_result,
             )
 
         self._maybe_generate_prompt(candles_by_tf, results, market_regime)
+
+    def _maybe_run_ml(
+        self,
+        candles_by_tf: Dict[str, List[Candle]],
+        indicators: List[IndicatorResult],
+    ) -> Dict[str, Any]:
+        if not self.ml_enabled:
+            return {}
+        if self.ml_model is None:
+            if not self._ml_missing_warned:
+                self._ml_missing_warned = True
+                self.event_bus.publish(
+                    "warning",
+                    "ML enabled but model file missing/unreadable",
+                    {"path": str(self.ml_model_path)},
+                )
+            return {}
+        base_tf = self.timeframes[0]
+        candles = candles_by_tf.get(base_tf, [])
+        closes = [c.close for c in candles]
+        if len(closes) < 3:
+            return {}
+        try:
+            result = run_live_inference(
+                closes=closes,
+                indicators=indicators,
+                indicator_names=self.ml_indicator_names,
+                model=self.ml_model,
+                lookback=self.ml_lookback,
+            )
+            payload = {
+                "label": result.label,
+                "confidence": round(float(result.confidence), 4),
+                "probability_up": round(float(result.probability_up), 4),
+                "buy_threshold": round(float(result.buy_threshold), 4),
+                "sell_threshold": round(float(result.sell_threshold), 4),
+            }
+            if result.confidence >= self.ml_event_threshold:
+                self.event_bus.publish("info", "ML advisory update", payload)
+            return payload
+        except Exception as exc:
+            self.event_bus.publish("error", "ML inference failed", {"error": str(exc)})
+            return {}
 
     def _extract_patterns(self, indicators: List[IndicatorResult]) -> List[Dict[str, Any]]:
         pattern_indicator = next((item for item in indicators if item.name == "pattern_detector"), None)
@@ -378,7 +447,7 @@ class Runner:
         if not candles:
             return
         try:
-            self.prompt_generator.generate_prompt(
+            prompts = self.prompt_generator.generate_prompt_bundle(
                 symbol=self.symbol,
                 candles=candles,
                 indicators=indicators,
@@ -392,7 +461,10 @@ class Runner:
             self.event_bus.publish(
                 "info",
                 "Prompt generated for Claude/Codex",
-                {"path": str(latest_path)},
+                {
+                    "path": str(latest_path),
+                    "targets": list(prompts.keys()),
+                },
             )
         except Exception as exc:
             logger.exception("Prompt generation failed: %s", exc)
@@ -410,6 +482,8 @@ class Runner:
             sentiment=self.state.sentiment,
             events=self.event_bus.recent(),
             errors=self.state.errors,
+            ml_result=self.state.ml_result,
+            last_ohlcv=self.state.last_ohlcv,
         )
 
 

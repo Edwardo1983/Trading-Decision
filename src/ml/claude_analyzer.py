@@ -2,9 +2,8 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 from dataclasses import dataclass, asdict
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -40,6 +39,8 @@ class PromptGenerator:
     # Main analysis prompt template - can be customized
     ANALYSIS_PROMPT_TEMPLATE = '''You are a professional cryptocurrency/trading analyst with expertise in technical analysis.
 Analyze the following market data and provide an objective evaluation.
+
+Target AI: {target_name}
 
 ## CURRENT MARKET DATA
 
@@ -101,6 +102,7 @@ Respond ONLY with the JSON, no additional text.'''
         self,
         output_dir: str = "prompts",
         lookback: int = 21,
+        targets: Optional[List[str]] = None,
     ):
         """
         Initialize prompt generator.
@@ -111,6 +113,9 @@ Respond ONLY with the JSON, no additional text.'''
         """
         self.output_dir = Path(output_dir)
         self.lookback = lookback
+        self.targets = [str(t).lower() for t in (targets or ["claude", "codex"]) if str(t).strip()]
+        if not self.targets:
+            self.targets = ["claude", "codex"]
         self._last_prompt: Optional[str] = None
         self._last_prompt_time: Optional[datetime] = None
         self._last_result: Optional[AnalysisResult] = None
@@ -233,8 +238,9 @@ Respond ONLY with the JSON, no additional text.'''
 
         return "\n".join(lines)
 
-    def generate_prompt(
+    def _build_prompt(
         self,
+        target_name: str,
         symbol: str,
         candles: List[Candle],
         indicators: List[IndicatorResult],
@@ -260,11 +266,10 @@ Respond ONLY with the JSON, no additional text.'''
         Returns:
             Formatted prompt string ready to be copied to AI
         """
-        now = datetime.utcnow()
-
-        prompt = self.ANALYSIS_PROMPT_TEMPLATE.format(
+        return self.ANALYSIS_PROMPT_TEMPLATE.format(
+            target_name=target_name.upper(),
             symbol=symbol,
-            timestamp=now.strftime("%Y-%m-%d %H:%M UTC"),
+            timestamp=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
             lookback=self.lookback,
             candle_data=self._format_candle_data(candles),
             indicators=self._format_indicators(indicators),
@@ -274,37 +279,105 @@ Respond ONLY with the JSON, no additional text.'''
             patterns=self._format_patterns(patterns or []),
         )
 
+    def generate_prompt(
+        self,
+        symbol: str,
+        candles: List[Candle],
+        indicators: List[IndicatorResult],
+        sentiment: Dict[str, Any] = None,
+        market_regime: MarketRegime = MarketRegime.UNKNOWN,
+        day_classification: str = "unknown",
+        patterns: List[Dict[str, Any]] = None,
+        save_to_file: bool = True,
+        target_name: str = "claude",
+    ) -> str:
+        now = datetime.now(timezone.utc)
+        target = str(target_name or "claude").lower()
+        prompt = self._build_prompt(
+            target_name=target,
+            symbol=symbol,
+            candles=candles,
+            indicators=indicators,
+            sentiment=sentiment,
+            market_regime=market_regime,
+            day_classification=day_classification,
+            patterns=patterns,
+        )
+
         self._last_prompt = prompt
         self._last_prompt_time = now
 
         if save_to_file:
-            self._save_prompt(prompt, symbol, now)
+            self._save_prompt(prompt, symbol, now, target)
 
         return prompt
 
-    def _save_prompt(self, prompt: str, symbol: str, timestamp: datetime):
+    def generate_prompt_bundle(
+        self,
+        symbol: str,
+        candles: List[Candle],
+        indicators: List[IndicatorResult],
+        sentiment: Dict[str, Any] = None,
+        market_regime: MarketRegime = MarketRegime.UNKNOWN,
+        day_classification: str = "unknown",
+        patterns: List[Dict[str, Any]] = None,
+        save_to_file: bool = True,
+    ) -> Dict[str, str]:
+        now = datetime.now(timezone.utc)
+        prompts: Dict[str, str] = {}
+        for target in self.targets:
+            prompt = self._build_prompt(
+                target_name=target,
+                symbol=symbol,
+                candles=candles,
+                indicators=indicators,
+                sentiment=sentiment,
+                market_regime=market_regime,
+                day_classification=day_classification,
+                patterns=patterns,
+            )
+            prompts[target] = prompt
+            if save_to_file:
+                self._save_prompt(prompt, symbol, now, target)
+
+        if prompts:
+            self._last_prompt = prompts[self.targets[0]]
+            self._last_prompt_time = now
+        return prompts
+
+    def _save_prompt(self, prompt: str, symbol: str, timestamp: datetime, target_name: str):
         """Save prompt to file for easy access."""
         self._ensure_output_dir()
+        target = str(target_name).lower()
 
-        # Save latest prompt (always overwritten)
-        latest_path = self.output_dir / "latest_prompt.txt"
+        latest_path = self.output_dir / f"latest_prompt_{target}.txt"
         with open(latest_path, "w", encoding="utf-8") as f:
             f.write(f"# Generated: {timestamp.strftime('%Y-%m-%d %H:%M UTC')}\n")
             f.write(f"# Symbol: {symbol}\n")
-            f.write(f"# Copy everything below this line to Claude Code or Codex:\n")
+            f.write(f"# Target: {target.upper()}\n")
+            f.write(f"# Copy everything below this line to {target.upper()}:\n")
             f.write("=" * 80 + "\n\n")
             f.write(prompt)
 
-        # Also save timestamped version
+        # Backward compatible "latest_prompt.txt" mirrors the first target file.
+        if target == self.targets[0]:
+            generic_latest = self.output_dir / "latest_prompt.txt"
+            with open(generic_latest, "w", encoding="utf-8") as f:
+                f.write(f"# Generated: {timestamp.strftime('%Y-%m-%d %H:%M UTC')}\n")
+                f.write(f"# Symbol: {symbol}\n")
+                f.write(f"# Target: {target.upper()}\n")
+                f.write("=" * 80 + "\n\n")
+                f.write(prompt)
+
         archive_dir = self.output_dir / "archive"
         archive_dir.mkdir(exist_ok=True)
-        archive_path = archive_dir / f"prompt_{symbol}_{timestamp.strftime('%Y%m%d_%H%M')}.txt"
+        archive_path = archive_dir / f"prompt_{target}_{symbol}_{timestamp.strftime('%Y%m%d_%H%M')}.txt"
         with open(archive_path, "w", encoding="utf-8") as f:
             f.write(prompt)
 
         logger.info("Prompt saved to: %s", latest_path)
 
-    def parse_response(self, response_text: str) -> Optional[AnalysisResult]:
+    def parse_response(self, response_text: str, target_name: str = "claude") -> Optional[AnalysisResult]:
         """
         Parse the AI response JSON into an AnalysisResult.
 
@@ -328,7 +401,7 @@ Respond ONLY with the JSON, no additional text.'''
             data = json.loads(json_text)
 
             result = AnalysisResult(
-                timestamp=datetime.utcnow(),
+                timestamp=datetime.now(timezone.utc),
                 market_sentiment=data.get("market_sentiment", "neutral"),
                 confidence=float(data.get("confidence", 0.5)),
                 key_observations=data.get("key_observations", []),
@@ -338,7 +411,7 @@ Respond ONLY with the JSON, no additional text.'''
             )
 
             self._last_result = result
-            self._save_result(result)
+            self._save_result(result, target_name=target_name)
 
             return result
 
@@ -349,12 +422,18 @@ Respond ONLY with the JSON, no additional text.'''
             logger.error("Error parsing response: %s", e)
             return None
 
-    def _save_result(self, result: AnalysisResult):
+    def _save_result(self, result: AnalysisResult, target_name: str = "claude"):
         """Save analysis result to file."""
         self._ensure_output_dir()
 
         result_path = self.output_dir / "latest_analysis.json"
         with open(result_path, "w", encoding="utf-8") as f:
+            data = asdict(result)
+            data["timestamp"] = result.timestamp.isoformat()
+            json.dump(data, f, indent=2)
+
+        target_result_path = self.output_dir / f"latest_analysis_{str(target_name).lower()}.json"
+        with open(target_result_path, "w", encoding="utf-8") as f:
             data = asdict(result)
             data["timestamp"] = result.timestamp.isoformat()
             json.dump(data, f, indent=2)
@@ -365,9 +444,14 @@ Respond ONLY with the JSON, no additional text.'''
         """Get the last parsed analysis result."""
         return self._last_result
 
-    def load_last_result(self) -> Optional[AnalysisResult]:
+    def load_last_result(self, target_name: str = "") -> Optional[AnalysisResult]:
         """Load the last saved analysis result from file."""
-        result_path = self.output_dir / "latest_analysis.json"
+        if target_name:
+            result_path = self.output_dir / f"latest_analysis_{str(target_name).lower()}.json"
+            if not result_path.exists():
+                result_path = self.output_dir / "latest_analysis.json"
+        else:
+            result_path = self.output_dir / "latest_analysis.json"
         if not result_path.exists():
             return None
 
@@ -384,7 +468,7 @@ Respond ONLY with the JSON, no additional text.'''
         """Check if a new prompt should be generated based on time interval."""
         if self._last_prompt_time is None:
             return True
-        elapsed = (datetime.utcnow() - self._last_prompt_time).total_seconds()
+        elapsed = (datetime.now(timezone.utc) - self._last_prompt_time).total_seconds()
         return elapsed >= interval_minutes * 60
 
 

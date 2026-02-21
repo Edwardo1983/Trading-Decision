@@ -91,3 +91,5 @@ class RunnerSnapshot:
     sentiment: Dict[str, Any]
     events: List[Event]
     errors: List[str]
+    ml_result: Dict[str, Any] = field(default_factory=dict)
+    last_ohlcv: Dict[str, float] = field(default_factory=dict)

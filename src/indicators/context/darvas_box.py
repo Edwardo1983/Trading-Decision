@@ -43,31 +43,67 @@ class DarvasBoxIndicator(IndicatorBase):
         bars_in_box = len(candles) - last_idx - 1
         matured = bars_in_box >= min_bars_in_box
 
-        price = candles[-1].close if close_breakout else candles[-1].high
+        recent = candles[-confirmation_bars:] if confirmation_bars > 0 else [candles[-1]]
+        if close_breakout:
+            up_confirmed = all(c.close > box_top for c in recent)
+            down_confirmed = all(c.close < box_bottom for c in recent)
+            up_potential = candles[-1].close > box_top
+            down_potential = candles[-1].close < box_bottom
+        else:
+            up_confirmed = all(c.high > box_top for c in recent)
+            down_confirmed = all(c.low < box_bottom for c in recent)
+            up_potential = candles[-1].high > box_top
+            down_potential = candles[-1].low < box_bottom
+
+        avg_volume = sum(c.volume for c in candles[-20:]) / min(len(candles), 20)
+        volume_support = candles[-1].volume > avg_volume * 1.15 if avg_volume > 0 else False
+
+        def _rng(c: Candle) -> float:
+            return max(0.0, c.high - c.low)
+
+        avg_range = sum(_rng(c) for c in candles[-20:]) / min(len(candles), 20)
+        volatility_support = _rng(candles[-1]) > avg_range * 1.1 if avg_range > 0 else False
 
         state = SignalState.NEUTRAL
         reason = "inside box"
         breakout_dir = "none"
-        if price > box_top:
+        breakout_confirmed = False
+
+        if up_confirmed:
             state = SignalState.BUY
             breakout_dir = "up"
-            reason = "break above darvas top"
-        elif price < box_bottom:
+            breakout_confirmed = True
+            reason = "break above darvas top (confirmed)"
+        elif down_confirmed:
             state = SignalState.SELL
             breakout_dir = "down"
-            reason = "break below darvas bottom"
+            breakout_confirmed = True
+            reason = "break below darvas bottom (confirmed)"
+        elif up_potential:
+            reason = "potential up breakout, waiting confirmation bars"
+        elif down_potential:
+            reason = "potential down breakout, waiting confirmation bars"
 
-        confidence = 40.0
+        confidence = 35.0
         if matured:
             confidence += 20.0
-        if state != SignalState.NEUTRAL:
+        if breakout_confirmed:
             confidence += 20.0
+        if volume_support:
+            confidence += 10.0
+        if volatility_support:
+            confidence += 5.0
 
         value = {
             "box_top": box_top,
             "box_bottom": box_bottom,
             "in_box": state == SignalState.NEUTRAL,
             "breakout_direction": breakout_dir,
+            "breakout_confirmed": breakout_confirmed,
+            "confirmation_bars": confirmation_bars,
+            "close_breakout": close_breakout,
+            "volume_support": volume_support,
+            "volatility_support": volatility_support,
             "bars_in_box": bars_in_box,
         }
         return IndicatorResult(self.name, self.category, self.timeframes_required[0], value, state, min(100.0, confidence), reason, self.weight, {"matured": matured})
