@@ -1,6 +1,14 @@
 app:
   symbol: BTCUSDT
   symbols: ["BTCUSDT"]
+  trade_mode: "short"
+  trade_modes:
+    short:
+      analysis_timeframes: ["1m", "5m", "15m", "1h", "4h"]
+      summary_timeframes: ["1m", "15m", "1h", "4h"]
+    long:
+      analysis_timeframes: ["1h", "4h", "1d", "1w"]
+      summary_timeframes: ["1h", "4h", "1d", "1w"]
   market_type: spot
   timeframes: ["1m", "5m", "15m", "1h"]
   refresh_seconds: 60

@@ -12,6 +12,7 @@ TIMEFRAME_SECONDS: Dict[str, int] = {
     "2h": 7200,
     "4h": 14400,
     "1d": 86400,
+    "1w": 604800,
 }
 
 

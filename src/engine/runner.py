@@ -46,7 +46,32 @@ class Runner:
 
         app = config.get("app", {})
         self.symbol = app.get("symbol", "BTCUSDT")
-        self.timeframes = app.get("timeframes", ["1m"])
+        self.trade_mode = str(app.get("trade_mode", "short")).strip().lower()
+        trade_modes = app.get("trade_modes", {}) if isinstance(app.get("trade_modes", {}), dict) else {}
+        mode_cfg = trade_modes.get(self.trade_mode, {}) if isinstance(trade_modes, dict) else {}
+
+        mode_analysis_tfs = mode_cfg.get("analysis_timeframes", [])
+        mode_summary_tfs = mode_cfg.get("summary_timeframes", [])
+        configured_timeframes = app.get("timeframes", ["1m"])
+        configured_summary_tfs = app.get("summary_timeframes", [])
+
+        analysis_tfs = mode_analysis_tfs if isinstance(mode_analysis_tfs, list) and mode_analysis_tfs else configured_timeframes
+        summary_tfs = mode_summary_tfs if isinstance(mode_summary_tfs, list) and mode_summary_tfs else configured_summary_tfs
+        if not summary_tfs:
+            summary_tfs = analysis_tfs
+
+        csv_cfg = config.get("csv", {})
+        self.csv_anchor_timeframe = str(csv_cfg.get("timeframe", "1m"))
+
+        self.timeframes = [str(tf) for tf in analysis_tfs if str(tf).strip()]
+        if self.csv_anchor_timeframe not in self.timeframes:
+            self.timeframes.append(self.csv_anchor_timeframe)
+        self.timeframes = list(dict.fromkeys(self.timeframes))
+
+        self.summary_timeframes = [str(tf) for tf in summary_tfs if str(tf).strip()]
+        if not self.summary_timeframes:
+            self.summary_timeframes = [self.csv_anchor_timeframe]
+        self.summary_timeframes = [tf for tf in self.summary_timeframes if tf in self.timeframes] or [self.csv_anchor_timeframe]
         self.refresh_seconds = int(app.get("refresh_seconds", 60))
         self.buffer_size = int(app.get("buffer_size", 500))
         self.timezone = app.get("timezone", "UTC")
@@ -373,11 +398,32 @@ class Runner:
                 close_time = candle.timestamp + timedelta(seconds=tf_seconds)
             if close_time <= (now_utc + close_grace):
                 return candle
-        return candles[-1]
+        return candles[-2] if len(candles) >= 2 else candles[-1]
+
+    def _build_tf_view(self, anchor_tf: str, candles_by_tf: Dict[str, List[Candle]]) -> Dict[str, List[Candle]]:
+        view: Dict[str, List[Candle]] = dict(candles_by_tf)
+        if anchor_tf in candles_by_tf:
+            # Most indicators are coded on "1m"; we remap "1m" to selected anchor TF
+            # so we can generate dedicated summaries for 1m/15m/1h/4h without duplicating indicators.
+            view["1m"] = candles_by_tf[anchor_tf]
+        return view
+
+    def _compute_indicators(self, candles_view: Dict[str, List[Any]], anchor_tf: str) -> List[IndicatorResult]:
+        results: List[IndicatorResult] = []
+        for indicator in self.indicators:
+            try:
+                results.append(indicator.compute(candles_view))
+            except Exception as exc:
+                logger.debug("Indicator error %s on %s: %s", indicator.name, anchor_tf, exc)
+                self.event_bus.publish(
+                    "error",
+                    f"Indicator {indicator.name} failed",
+                    {"error": str(exc), "timeframe": anchor_tf},
+                )
+        return results
 
     async def _compute_cycle(self) -> None:
         candles_by_tf = {tf: buffer.to_list() for tf, buffer in self.buffers.items()}
-        results: List[IndicatorResult] = []
         if self.sentiment_client:
             try:
                 self.state.sentiment = await self.sentiment_client.refresh(self.symbol)
@@ -385,31 +431,70 @@ class Runner:
                 logger.debug("Sentiment refresh failed: %s", exc)
         if self.state.sentiment:
             candles_by_tf["sentiment"] = [self.state.sentiment]
-        for indicator in self.indicators:
-            try:
-                results.append(indicator.compute(candles_by_tf))
-            except Exception as exc:
-                logger.debug("Indicator error %s: %s", indicator.name, exc)
-                self.event_bus.publish("error", f"Indicator {indicator.name} failed", {"error": str(exc)})
-
-        base_tf = self.timeframes[0]
+        base_tf = self.csv_anchor_timeframe
         regime_tf = self._resolve_regime_timeframe(candles_by_tf)
         market_regime = classify_regime(candles_by_tf.get(regime_tf, []), self.config)
-        agg = aggregate(results, self.config, market_regime)
+
+        summary_payloads: Dict[str, Dict[str, Any]] = {}
+        for tf in self.summary_timeframes:
+            candles = candles_by_tf.get(tf, [])
+            if not candles:
+                continue
+            tf_view = self._build_tf_view(tf, candles_by_tf)
+            tf_results = self._compute_indicators(tf_view, tf)
+            tf_agg = aggregate(tf_results, self.config, market_regime)
+            tf_last = self._select_latest_closed_candle(tf, candles) or candles[-1]
+            summary_payloads[tf] = {
+                "results": tf_results,
+                "aggregate": tf_agg,
+                "ohlcv": {
+                    "open": tf_last.open,
+                    "high": tf_last.high,
+                    "low": tf_last.low,
+                    "close": tf_last.close,
+                    "volume": tf_last.volume,
+                },
+            }
+
+        primary_tf = next((tf for tf in self.summary_timeframes if tf in summary_payloads), base_tf)
+        if primary_tf in summary_payloads:
+            primary_results = summary_payloads[primary_tf]["results"]
+            primary_agg = summary_payloads[primary_tf]["aggregate"]
+            primary_ohlcv = summary_payloads[primary_tf]["ohlcv"]
+        else:
+            tf_view = self._build_tf_view(base_tf, candles_by_tf)
+            primary_results = self._compute_indicators(tf_view, base_tf)
+            primary_agg = aggregate(primary_results, self.config, market_regime)
+            last_candle = self._select_latest_closed_candle(base_tf, candles_by_tf.get(base_tf, []))
+            primary_ohlcv = (
+                {
+                    "open": last_candle.open,
+                    "high": last_candle.high,
+                    "low": last_candle.low,
+                    "close": last_candle.close,
+                    "volume": last_candle.volume,
+                }
+                if last_candle
+                else {}
+            )
 
         self.clock_sync.sync_if_due()
         self.state.last_update = self.clock_sync.now_tz(self.timezone)
-        self.state.indicators = results
-        self.state.aggregate = agg
+        self.state.indicators = primary_results
+        self.state.aggregate = primary_agg
         self.state.market_regime = market_regime
-        self.state.ml_result = self._maybe_run_ml(candles_by_tf, results)
+        self.state.ml_result = self._maybe_run_ml(candles_by_tf, primary_results)
 
-        if agg.alignment:
-            self.event_bus.publish("info", "Alignment reached", {"state": agg.final_state.value})
+        if primary_agg.alignment:
+            self.event_bus.publish(
+                "info",
+                "Alignment reached",
+                {"state": primary_agg.final_state.value, "timeframe": primary_tf},
+            )
 
         alerts = self.config.get("alerts", {})
-        if alerts.get("enabled", False) and agg:
-            max_conf = max(agg.buy_pct, agg.sell_pct)
+        if alerts.get("enabled", False) and primary_agg:
+            max_conf = max(primary_agg.buy_pct, primary_agg.sell_pct)
             if max_conf >= float(alerts.get("min_confidence", 70)):
                 play_sound(alerts.get("sound_file", ""))
 
@@ -420,13 +505,7 @@ class Runner:
             last = selected or candles_by_tf[base_tf][-1]
             last_candle_timestamp = last.timestamp
             last_candle_close_time = last.close_time
-            self.state.last_ohlcv = {
-                "open": last.open,
-                "high": last.high,
-                "low": last.low,
-                "close": last.close,
-                "volume": last.volume,
-            }
+            self.state.last_ohlcv = primary_ohlcv
 
         # CSV logging
         csv_cfg = self.config.get("csv", {})
@@ -435,22 +514,42 @@ class Runner:
                 last_candle_timestamp is not None and self._last_logged_candle_ts == last_candle_timestamp
             )
             if should_log:
-                self.csv_logger.log(
-                    symbol=self.symbol,
-                    timeframe=base_tf,
-                    ohlcv=self.state.last_ohlcv,
-                    indicators=results,
-                    aggregate=agg,
-                    include_indicators=csv_cfg.get("include_indicators", []),
-                    market_regime=market_regime,
-                    sentiment=self.state.sentiment,
-                    ml_result=self.state.ml_result,
-                    candle_timestamp=last_candle_timestamp,
-                    candle_close_time=last_candle_close_time,
-                )
+                include_indicators = csv_cfg.get("include_indicators", [])
+                if summary_payloads:
+                    for tf in self.summary_timeframes:
+                        payload = summary_payloads.get(tf)
+                        if not payload:
+                            continue
+                        self.csv_logger.log(
+                            symbol=self.symbol,
+                            timeframe=tf,
+                            ohlcv=payload["ohlcv"],
+                            indicators=payload["results"],
+                            aggregate=payload["aggregate"],
+                            include_indicators=include_indicators,
+                            market_regime=market_regime,
+                            sentiment=self.state.sentiment,
+                            ml_result=self.state.ml_result,
+                            candle_timestamp=last_candle_timestamp,
+                            candle_close_time=last_candle_close_time,
+                        )
+                else:
+                    self.csv_logger.log(
+                        symbol=self.symbol,
+                        timeframe=base_tf,
+                        ohlcv=self.state.last_ohlcv,
+                        indicators=primary_results,
+                        aggregate=primary_agg,
+                        include_indicators=include_indicators,
+                        market_regime=market_regime,
+                        sentiment=self.state.sentiment,
+                        ml_result=self.state.ml_result,
+                        candle_timestamp=last_candle_timestamp,
+                        candle_close_time=last_candle_close_time,
+                    )
                 self._last_logged_candle_ts = last_candle_timestamp
 
-        self._maybe_generate_prompt(candles_by_tf, results, market_regime)
+        self._maybe_generate_prompt(candles_by_tf, primary_results, market_regime)
 
     def _maybe_run_ml(
         self,
@@ -468,7 +567,7 @@ class Runner:
                     {"path": str(self.ml_model_path)},
                 )
             return {}
-        base_tf = self.timeframes[0]
+        base_tf = self.csv_anchor_timeframe
         candles = candles_by_tf.get(base_tf, [])
         closes = [c.close for c in candles]
         if len(closes) < 3:
@@ -518,8 +617,10 @@ class Runner:
             return
         if not self.prompt_generator.should_refresh(self.prompt_interval_minutes):
             return
-        base_tf = self.timeframes[0]
+        base_tf = self.summary_timeframes[0] if self.summary_timeframes else self.csv_anchor_timeframe
         candles = candles_by_tf.get(base_tf, [])
+        if not candles and base_tf != self.csv_anchor_timeframe:
+            candles = candles_by_tf.get(self.csv_anchor_timeframe, [])
         if not candles:
             return
         try:

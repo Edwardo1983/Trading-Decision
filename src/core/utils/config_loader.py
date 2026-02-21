@@ -50,6 +50,28 @@ def _validate_schema(config: Dict[str, Any]) -> None:
     jsonschema.validate(instance=config, schema=schema)
 
 
+def _split_csv_values(value: str) -> list[str]:
+    return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def _apply_trade_mode(config: Dict[str, Any], mode_name: str) -> None:
+    app = config.setdefault("app", {})
+    trade_modes = app.get("trade_modes", {})
+    if not isinstance(trade_modes, dict):
+        return
+    mode_cfg = trade_modes.get(mode_name)
+    if not isinstance(mode_cfg, dict):
+        logger.warning("Trade mode not found: %s", mode_name)
+        return
+    analysis_tfs = mode_cfg.get("analysis_timeframes")
+    summary_tfs = mode_cfg.get("summary_timeframes")
+    if isinstance(analysis_tfs, list) and analysis_tfs:
+        app["timeframes"] = [str(item) for item in analysis_tfs]
+    if isinstance(summary_tfs, list) and summary_tfs:
+        app["summary_timeframes"] = [str(item) for item in summary_tfs]
+    app["trade_mode"] = mode_name
+
+
 def load_config() -> Dict[str, Any]:
     load_dotenv()
     base = _load_yaml(config_dir() / "default.yaml")
@@ -60,6 +82,15 @@ def load_config() -> Dict[str, Any]:
             base = _deep_merge(base, _load_yaml(profile_path))
         else:
             logger.warning("Profile not found: %s", profile)
+
+    trade_mode_env = os.getenv("APP_TRADE_MODE")
+    trade_mode = (
+        str(trade_mode_env).strip().lower()
+        if trade_mode_env
+        else str(base.get("app", {}).get("trade_mode", "")).strip().lower()
+    )
+    if trade_mode:
+        _apply_trade_mode(base, trade_mode)
 
     # Optional env overrides
     symbols_env = os.getenv("APP_SYMBOLS")
@@ -72,6 +103,18 @@ def load_config() -> Dict[str, Any]:
     elif symbol:
         base.setdefault("app", {})["symbol"] = symbol
         base["app"]["symbols"] = [symbol]
+
+    app_timeframes_env = os.getenv("APP_TIMEFRAMES")
+    if app_timeframes_env:
+        values = _split_csv_values(app_timeframes_env)
+        if values:
+            base.setdefault("app", {})["timeframes"] = values
+
+    app_summary_timeframes_env = os.getenv("APP_SUMMARY_TIMEFRAMES")
+    if app_summary_timeframes_env:
+        values = _split_csv_values(app_summary_timeframes_env)
+        if values:
+            base.setdefault("app", {})["summary_timeframes"] = values
 
     provider_env = os.getenv("APP_PROVIDER")
     if provider_env:

@@ -11,7 +11,7 @@ Sistem de suport decizional pentru trading crypto (BTC/altcoins). Agrega indicat
 - Market regime zilnic (AGGRESSIVE / MODERATE / CHILL)
 - Smart Money (Order Blocks + FVG + Sweeps + BOS/CHoCH)
 - Sentiment: futures (funding/OI/long-short) + spot (buy/sell ratio proxy)
-- UI Streamlit cu Start/Stop, Signal Board (live + CSV), tabel clasic, sumar, evenimente
+- UI Streamlit summary-grid: 2 paritati simultan x 4 ferestre timeframe, cu Start/Stop si mod Short/Long
 - CSV logging la minut, rotatie zilnica, plus stari/conditii per indicator (`sig_*`, `conf_*`, `reason_*`)
 - ML advisory real (logistic regression) + calibrare praguri + backtesting walk-forward
 - Generator prompt automat pentru Claude/Codex (fisier text in `prompts/<SYMBOL>/`)
@@ -114,8 +114,11 @@ Sectiuni cheie:
 - Pentru spot folosim proxy buy/sell ratio din 24h ticker + optional recent trades
 - MEXC WS actualizeaza candle-ul curent in timp real (fara flag explicit de inchidere)
 - In UI, butoanele `START/STOP` lanseaza/opresc engine-ul CLI (`python -m app start/stop`)
-- In UI, modul `Signal Board (Live)` afiseaza ultima stare live din CSV-ul curent
-- In UI, modul `Signal Board (CSV Logs)` permite selectie fisier + rand CSV
+- In UI, modul `Short/Long Trade` seteaza timeframe-urile de analiza:
+  - Short: `1m, 5m, 15m, 1h, 4h` (summary: `1m, 15m, 1h, 4h`)
+  - Long: `1h, 4h, 1d, 1w` (summary: `1h, 4h, 1d, 1w`)
+- UI afiseaza pentru fiecare paritate 4 carduri de summary pe timeframe-urile modului selectat
+- CSV continua sa foloseasca timestamp ancorat pe `1m`
 - Timestamp CSV este sincronizat NTP (cu fallback la ceasul local), iar runner-ul este aliniat la ceas (`time_sync.align_runner_to_clock`)
 - CSV include `captured_at` (timp real de colectare) si `capture_lag_sec` pentru audit
 - Pentru sincronizare stricta la minut, `time_sync.run_second_offset` poate fi negativ (ex: `-2.0`) ca prefetch-ul sa incheie aproape de fix
@@ -143,7 +146,7 @@ Decision-support system for crypto trading (BTC/altcoins). Aggregates technical 
 - Daily market regime (AGGRESSIVE / MODERATE / CHILL)
 - Smart Money (Order Blocks + FVG + Sweeps + BOS/CHoCH)
 - Sentiment: futures (funding/OI/long-short) + spot (buy/sell proxy)
-- Streamlit UI with Start/Stop, Signal Board (live + CSV), classic table, summary, events
+- Streamlit summary-grid UI: 2 simultaneous pairs x 4 timeframe windows, with Start/Stop and Short/Long mode
 - Minute CSV logging with daily rotation, plus per-indicator state/condition (`sig_*`, `conf_*`, `reason_*`)
 - Real ML advisory (logistic regression) + threshold calibration + walk-forward backtesting
 - Automatic Claude/Codex prompt generator (`prompts/<SYMBOL>/`)
@@ -246,8 +249,11 @@ Key sections:
 - Spot uses buy/sell proxy from 24h ticker + optional recent trades
 - MEXC WS updates the current candle in real time (no explicit close flag)
 - In UI, `START/STOP` controls launch/stop the CLI engine (`python -m app start/stop`)
-- In UI, `Signal Board (Live)` shows the latest live state from the active CSV
-- In UI, `Signal Board (CSV Logs)` allows selecting file and row from CSV logs
+- In UI, `Short/Long Trade` sets analysis timeframes:
+  - Short: `1m, 5m, 15m, 1h, 4h` (summary: `1m, 15m, 1h, 4h`)
+  - Long: `1h, 4h, 1d, 1w` (summary: `1h, 4h, 1d, 1w`)
+- UI shows 4 summary cards per pair, on the selected mode timeframes
+- CSV remains anchored on `1m` timestamp
 - CSV timestamp is NTP-synced (fallback to local device clock), and the runner is clock-aligned (`time_sync.align_runner_to_clock`)
 - CSV includes `captured_at` (real capture time) and `capture_lag_sec` for auditing
 - For strict minute sync, `time_sync.run_second_offset` can be negative (e.g. `-2.0`) so prefetch finishes near minute close
