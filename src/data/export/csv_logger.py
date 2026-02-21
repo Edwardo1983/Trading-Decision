@@ -9,7 +9,8 @@ from threading import Lock
 from typing import Dict, Iterable, List, Optional
 
 from core.models import AggregateResult, IndicatorResult, MarketRegime
-from core.utils.time_utils import now_tz
+from core.utils.clock_sync import ClockSync
+from core.utils.time_utils import now_tz, to_tz, truncate_to_minute
 
 logger = logging.getLogger(__name__)
 
@@ -20,16 +21,41 @@ except Exception:  # pragma: no cover
 
 
 class CSVMinuteLogger:
-    def __init__(self, base_path: str, timezone: str, rotate_daily: bool = True):
+    def __init__(
+        self,
+        base_path: str,
+        timezone: str,
+        rotate_daily: bool = True,
+        clock_sync: Optional[ClockSync] = None,
+        timestamp_source: str = "candle",
+        minute_precision: bool = True,
+    ):
         self.base_path = Path(base_path)
         self.timezone = timezone
         self.rotate_daily = rotate_daily
+        self.clock_sync = clock_sync
+        self.timestamp_source = str(timestamp_source or "candle").lower()
+        self.minute_precision = bool(minute_precision)
         self._lock = Lock()
         self._current_date: Optional[date] = None
         self._current_file: Optional[Path] = None
 
-    def _ensure_file(self, symbol: str) -> Path:
-        today = now_tz(self.timezone).date()
+    def _now(self) -> datetime:
+        if self.clock_sync:
+            return self.clock_sync.now_tz(self.timezone)
+        return now_tz(self.timezone)
+
+    def _resolve_row_timestamp(self, candle_timestamp: Optional[datetime]) -> datetime:
+        if self.timestamp_source == "candle" and candle_timestamp is not None:
+            ts = to_tz(candle_timestamp, self.timezone)
+        else:
+            ts = self._now()
+        if self.minute_precision:
+            ts = truncate_to_minute(ts)
+        return ts
+
+    def _ensure_file(self, symbol: str, row_time: Optional[datetime] = None) -> Path:
+        today = row_time.date() if row_time else self._now().date()
         if self._current_file is None or (self.rotate_daily and self._current_date != today):
             self.base_path.mkdir(parents=True, exist_ok=True)
             filename = f"{today.isoformat()}_{symbol}.csv"
@@ -116,11 +142,13 @@ class CSVMinuteLogger:
         market_regime: MarketRegime,
         sentiment: Optional[Dict[str, float]] = None,
         ml_result: Optional[Dict[str, object]] = None,
+        candle_timestamp: Optional[datetime] = None,
     ) -> None:
         include_set = set(include_indicators)
-        file_path = self._ensure_file(symbol)
+        row_time = self._resolve_row_timestamp(candle_timestamp)
+        file_path = self._ensure_file(symbol, row_time=row_time)
         row = {
-            "timestamp": now_tz(self.timezone).isoformat(),
+            "timestamp": row_time.isoformat(),
             "symbol": symbol,
             "timeframe": timeframe,
             "open": ohlcv.get("open"),

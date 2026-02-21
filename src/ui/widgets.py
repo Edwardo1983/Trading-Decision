@@ -724,6 +724,8 @@ def render_events(events) -> None:
             level = str(evt.get("level", "info")).upper()
             ts = str(evt.get("timestamp", "-"))
             message = str(evt.get("message", evt))
-            st.markdown(f"`{ts}` **{level}** {message}")
+            source = str(evt.get("source", "")).strip()
+            source_prefix = f"[{source}] " if source else ""
+            st.markdown(f"`{ts}` **{level}** {source_prefix}{message}")
             continue
         st.markdown(f"- {evt}")

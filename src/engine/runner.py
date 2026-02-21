@@ -7,10 +7,10 @@ from threading import Thread
 from typing import Any, Dict, List, Optional
 
 from core.models import Candle, EngineState, IndicatorResult, MarketRegime, RunnerSnapshot
+from core.utils.clock_sync import ClockSync
 from core.utils.config_loader import load_config
 from core.utils.paths import project_root
 from core.utils.ring_buffer import RingBuffer
-from core.utils.time_utils import now_tz
 from core.utils.sound_alert import play_sound
 from data.binance.mapper import ws_to_candle as binance_ws_to_candle
 from data.binance.ws import BinanceWSClient
@@ -48,6 +48,8 @@ class Runner:
         self.refresh_seconds = int(app.get("refresh_seconds", 60))
         self.buffer_size = int(app.get("buffer_size", 500))
         self.timezone = app.get("timezone", "UTC")
+        self.clock_sync = ClockSync.from_config(config.get("time_sync", {}))
+        self.clock_sync.sync_if_due()
 
         data = config.get("data", {})
         self.rest_limit = int(data.get("rest_limit", 200))
@@ -98,6 +100,9 @@ class Runner:
             base_path=str(csv_base_path),
             timezone=self.timezone,
             rotate_daily=bool(csv_cfg.get("rotate_daily", True)),
+            clock_sync=self.clock_sync,
+            timestamp_source=str(csv_cfg.get("timestamp_source", "candle")),
+            minute_precision=bool(csv_cfg.get("minute_precision", True)),
         )
 
         prompt_cfg = config.get("prompt_generator", {})
@@ -334,7 +339,8 @@ class Runner:
         market_regime = classify_regime(candles_by_tf.get(regime_tf, []), self.config)
         agg = aggregate(results, self.config, market_regime)
 
-        self.state.last_update = now_tz(self.timezone)
+        self.clock_sync.sync_if_due()
+        self.state.last_update = self.clock_sync.now_tz(self.timezone)
         self.state.indicators = results
         self.state.aggregate = agg
         self.state.market_regime = market_regime
@@ -349,8 +355,10 @@ class Runner:
             if max_conf >= float(alerts.get("min_confidence", 70)):
                 play_sound(alerts.get("sound_file", ""))
 
+        last_candle_timestamp = None
         if candles_by_tf.get(base_tf):
             last = candles_by_tf[base_tf][-1]
+            last_candle_timestamp = last.timestamp
             self.state.last_ohlcv = {
                 "open": last.open,
                 "high": last.high,
@@ -372,6 +380,7 @@ class Runner:
                 market_regime=market_regime,
                 sentiment=self.state.sentiment,
                 ml_result=self.state.ml_result,
+                candle_timestamp=last_candle_timestamp,
             )
 
         self._maybe_generate_prompt(candles_by_tf, results, market_regime)

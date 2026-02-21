@@ -30,6 +30,13 @@ data:
     backoff_seconds: 2
   ws_reconnect_seconds: 5
 
+time_sync:
+  enabled: true
+  servers: ["time.google.com", "time.cloudflare.com", "pool.ntp.org"]
+  timeout_seconds: 1.5
+  sync_interval_seconds: 600
+  max_offset_seconds: 3.0
+
 thresholds:
   alignment: 75
   wait_diff: 10
@@ -274,6 +281,8 @@ csv:
   base_path: "logs"
   timeframe: "1m"
   rotate_daily: true
+  timestamp_source: "candle"  # candle | clock
+  minute_precision: true
   include_indicators: [
     "ema_bias", "market_structure", "smart_money", "adx", "supertrend", "sma", "vwma", "ichimoku", "parabolic_sar",
     "rsi_state", "macd", "stochastic_rsi", "roc_impulse", "cci", "williams_r",

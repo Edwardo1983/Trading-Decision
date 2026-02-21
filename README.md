@@ -107,7 +107,7 @@ Sectiuni cheie:
 - `indicator_params`
 - `thresholds`
 - `sentiment` (spot_trade_depth pentru imbalance avansat)
-- `csv`, `alerts`, `astro`, `ml`
+- `csv`, `time_sync`, `alerts`, `astro`, `ml`
 
 ## Note importante
 - Sentiment futures functioneaza doar cu `market_type: futures`
@@ -116,6 +116,7 @@ Sectiuni cheie:
 - In UI, butoanele `START/STOP` lanseaza/opresc engine-ul CLI (`python -m app start/stop`)
 - In UI, modul `Signal Board (Live)` afiseaza ultima stare live din CSV-ul curent
 - In UI, modul `Signal Board (CSV Logs)` permite selectie fisier + rand CSV
+- Timestamp CSV este sincronizat NTP (cu fallback la ceasul local) si aliniat la minut (`ss=00`)
 - Astro este context experimental (implicit NEUTRAL; optional bias directional din config)
 - Darvas foloseste confirmare explicita (`confirmation_bars`) + suport volum/volatilitate
 - Astro este experimental (nu predictor validat)
@@ -236,7 +237,7 @@ Key sections:
 - `indicator_params`
 - `thresholds`
 - `sentiment` (spot_trade_depth for deeper imbalance)
-- `csv`, `alerts`, `astro`, `ml`
+- `csv`, `time_sync`, `alerts`, `astro`, `ml`
 
 ## Notes
 - Futures sentiment works only with `market_type: futures`
@@ -245,6 +246,7 @@ Key sections:
 - In UI, `START/STOP` controls launch/stop the CLI engine (`python -m app start/stop`)
 - In UI, `Signal Board (Live)` shows the latest live state from the active CSV
 - In UI, `Signal Board (CSV Logs)` allows selecting file and row from CSV logs
+- CSV timestamp is NTP-synced (fallback to local device clock) and minute-aligned (`ss=00`)
 - Astro is experimental context (default NEUTRAL; optional directional bias in config)
 - Darvas uses explicit breakout confirmation (`confirmation_bars`) with volume/volatility support
 - Astro is experimental (not a validated predictor)

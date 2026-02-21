@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 import time
@@ -18,7 +19,6 @@ if str(SRC_DIR) not in sys.path:
 from core.utils.config_loader import load_config
 from ui.widgets import (
     build_indicator_dataframe_from_csv,
-    load_latest_csv_row,
     render_events,
     render_signal_layout_csv,
 )
@@ -29,6 +29,8 @@ PID_FILE = LOGS_DIR / "runner.pid"
 STOP_FILE = LOGS_DIR / "stop.flag"
 RUN_STDOUT = LOGS_DIR / "run_stdout.txt"
 RUN_STDERR = LOGS_DIR / "run_stderr.txt"
+
+LOG_LEVELS = ["ERROR", "WARNING", "INFO", "DEBUG", "CRITICAL"]
 
 
 def _load_css() -> None:
@@ -146,7 +148,7 @@ def _stop_runner() -> Tuple[bool, str]:
     return result.returncode == 0, output
 
 
-def _tail_lines(path: Path, limit: int = 50) -> List[str]:
+def _tail_lines(path: Path, limit: int = 120) -> List[str]:
     if not path.exists():
         return []
     try:
@@ -156,11 +158,50 @@ def _tail_lines(path: Path, limit: int = 50) -> List[str]:
     return [line for line in lines[-limit:] if line.strip()]
 
 
-def _collect_log_events(limit: int = 50) -> List[str]:
-    per_file = max(5, limit // 2)
-    stdout_lines = [f"[OUT] {line}" for line in _tail_lines(RUN_STDOUT, per_file)]
-    stderr_lines = [f"[ERR] {line}" for line in _tail_lines(RUN_STDERR, per_file)]
-    events = stdout_lines + stderr_lines
+def _parse_log_line(line: str, source: str) -> Optional[Dict[str, str]]:
+    stripped = line.strip()
+    if not stripped:
+        return None
+
+    level_match = re.search(r"\b(DEBUG|INFO|WARNING|ERROR|CRITICAL)\b", stripped)
+    if level_match:
+        level = level_match.group(1)
+    else:
+        low = stripped.lower()
+        if "traceback" in low or "exception" in low:
+            level = "ERROR"
+        else:
+            level = "INFO"
+
+    ts_match = re.match(r"^(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:,\d+)?)", stripped)
+    timestamp = ts_match.group(1) if ts_match else "-"
+
+    message = stripped
+    if " - " in stripped:
+        message = stripped.split(" - ", 1)[1].strip()
+
+    return {
+        "timestamp": timestamp,
+        "level": level,
+        "message": message,
+        "source": source,
+    }
+
+
+def _collect_log_events(limit: int, levels: List[str]) -> List[Dict[str, str]]:
+    wanted = {item.upper() for item in levels}
+    raw_limit = max(limit * 4, 80)
+    events: List[Dict[str, str]] = []
+
+    for source, path in (("stdout", RUN_STDOUT), ("stderr", RUN_STDERR)):
+        for line in _tail_lines(path, raw_limit):
+            evt = _parse_log_line(line, source)
+            if not evt:
+                continue
+            if evt["level"].upper() not in wanted:
+                continue
+            events.append(evt)
+
     return events[-limit:]
 
 
@@ -182,6 +223,17 @@ def _list_symbol_csv_files(log_dir: Path, symbol: str) -> List[Path]:
     return sorted(log_dir.glob(f"*_{normalized}.csv"), key=lambda p: p.stat().st_mtime, reverse=True)
 
 
+def _discover_symbols(config_symbols: List[str], log_dir: Path) -> List[str]:
+    symbols = {str(item).upper().strip() for item in config_symbols if str(item).strip()}
+    if log_dir.exists():
+        pattern = re.compile(r"^\d{4}-\d{2}-\d{2}_([A-Z0-9]+)(?:_LEGACY(?:_\d+)?)?\.CSV$", re.IGNORECASE)
+        for path in log_dir.glob("*.csv"):
+            match = pattern.match(path.name.upper())
+            if match:
+                symbols.add(match.group(1).upper())
+    return sorted(symbols) if symbols else ["BTCUSDT", "ETHUSDT"]
+
+
 def _to_string_row(row: pd.Series) -> Dict[str, str]:
     result: Dict[str, str] = {}
     for key, value in row.to_dict().items():
@@ -190,6 +242,131 @@ def _to_string_row(row: pd.Series) -> Dict[str, str]:
         else:
             result[str(key)] = str(value)
     return result
+
+
+def _load_latest_row_for_timeframe(
+    csv_base_path: Path,
+    symbol: str,
+    timeframe: str,
+) -> Tuple[Optional[Dict[str, str]], Optional[Path], bool]:
+    files = _list_symbol_csv_files(csv_base_path, symbol)
+    if not files:
+        return None, None, False
+
+    fallback_row: Optional[Dict[str, str]] = None
+    fallback_file: Optional[Path] = None
+
+    for file_idx, file_path in enumerate(files):
+        last_any: Optional[Dict[str, str]] = None
+        last_match: Optional[Dict[str, str]] = None
+        try:
+            with file_path.open("r", encoding="utf-8", newline="") as handle:
+                reader = pd.read_csv(handle, dtype=str)
+        except Exception:
+            continue
+
+        if reader.empty:
+            continue
+
+        for _, row in reader.iterrows():
+            row_dict = _to_string_row(row)
+            if str(row_dict.get("symbol", "")).upper() != symbol.upper():
+                continue
+            last_any = row_dict
+            if str(row_dict.get("timeframe", "")).strip() == timeframe:
+                last_match = row_dict
+
+        if file_idx == 0 and last_any is not None:
+            fallback_row = last_any
+            fallback_file = file_path
+
+        if last_match is not None:
+            return last_match, file_path, True
+
+    return fallback_row, fallback_file, False
+
+
+def _render_live_panel(panel_name: str, symbol: str, timeframe: str, csv_base_path: Path) -> str:
+    st.markdown(f"### {panel_name}: `{symbol}` ({timeframe})")
+    row, source_file, exact = _load_latest_row_for_timeframe(csv_base_path, symbol, timeframe)
+    if row and source_file:
+        if not exact:
+            st.info(
+                f"Nu exista randuri pe timeframe `{timeframe}` in CSV pentru {symbol}. "
+                "Afisez ultimul rand disponibil."
+            )
+        render_signal_layout_csv(symbol, row, source_file)
+        return row.get("timestamp", "-")
+
+    st.info(f"Nu exista date CSV pentru {symbol}. Ruleaza engine-ul si asteapta primul ciclu.")
+    return "-"
+
+
+def _render_csv_panel(panel_key: str, panel_name: str, symbol: str, timeframe: str, csv_base_path: Path) -> str:
+    st.markdown(f"### {panel_name}: `{symbol}` ({timeframe})")
+    files = _list_symbol_csv_files(csv_base_path, symbol)
+    if not files:
+        st.info("Nu exista fisiere CSV pentru simbolul selectat.")
+        return "-"
+
+    file_path = st.selectbox(
+        f"{panel_name} CSV File",
+        options=files,
+        format_func=lambda p: p.name,
+        key=f"{panel_key}_csv_file",
+    )
+    try:
+        df = pd.read_csv(file_path, dtype=str)
+    except Exception as exc:
+        st.error(f"Nu pot citi fisierul CSV: {exc}")
+        return "-"
+
+    if df.empty:
+        st.info("Fisierul CSV selectat nu contine date.")
+        return "-"
+
+    active_df = df
+    if "timeframe" in df.columns:
+        filtered = df[df["timeframe"].astype(str) == timeframe]
+        if not filtered.empty:
+            active_df = filtered
+        else:
+            st.warning(f"Timeframe `{timeframe}` nu exista in fisier; afisez toate randurile.")
+
+    max_idx = len(active_df) - 1
+    row_pos = st.slider(
+        f"{panel_name} CSV Row",
+        min_value=0,
+        max_value=max_idx,
+        value=max_idx,
+        key=f"{panel_key}_csv_row",
+    )
+    row = _to_string_row(active_df.iloc[row_pos])
+    render_signal_layout_csv(symbol, row, file_path)
+    st.markdown("#### Preview ultimele 15 randuri")
+    st.dataframe(active_df.tail(15), use_container_width=True, hide_index=True)
+    return row.get("timestamp", "-")
+
+
+def _render_classic_panel(panel_name: str, symbol: str, timeframe: str, csv_base_path: Path) -> str:
+    st.markdown(f"### {panel_name}: `{symbol}` ({timeframe})")
+    row, source_file, exact = _load_latest_row_for_timeframe(csv_base_path, symbol, timeframe)
+    if not row or not source_file:
+        st.info("Nu exista date pentru modul Classic Table.")
+        return "-"
+
+    if not exact:
+        st.info(f"Nu exista randuri pe timeframe `{timeframe}`. Afisez ultimul rand disponibil.")
+
+    st.caption(f"Source: {source_file.name} | Last row timestamp: {row.get('timestamp', '-')}")
+    df = build_indicator_dataframe_from_csv(row)
+    if df.empty:
+        st.info("Nu exista coloane de indicator in ultimul rand CSV.")
+    else:
+        st.dataframe(df, use_container_width=True, hide_index=True)
+    with st.expander(f"Raw CSV row ({panel_name})"):
+        st.json(row)
+    return row.get("timestamp", "-")
 
 
 def _trigger_rerun() -> None:
@@ -208,31 +385,38 @@ def run_app() -> None:
 
     config = st.session_state.config
     app_cfg = config.get("app", {})
-    symbols = app_cfg.get("symbols") or [app_cfg.get("symbol", "BTCUSDT")]
-    symbols = [str(item).upper().strip() for item in symbols if str(item).strip()]
-    if not symbols:
-        symbols = ["BTCUSDT"]
-    timeframes = [str(item) for item in (app_cfg.get("timeframes") or ["1m", "5m", "15m", "1h"])]
-    if not timeframes:
-        timeframes = ["1m"]
+    csv_base_path = _resolve_csv_base_path(config)
 
-    default_symbol = st.session_state.get("ui_symbol", symbols[0])
-    if default_symbol not in symbols:
-        default_symbol = symbols[0]
-    default_tf = st.session_state.get("ui_tf", timeframes[0])
-    if default_tf not in timeframes:
-        default_tf = timeframes[0]
+    cfg_symbols = app_cfg.get("symbols") or [app_cfg.get("symbol", "BTCUSDT")]
+    symbols = _discover_symbols([str(item) for item in cfg_symbols], csv_base_path)
+
+    cfg_timeframes = [str(item) for item in (app_cfg.get("timeframes") or ["1m", "5m", "15m", "1h"])]
+    default_timeframes = ["1m", "5m", "15m", "1h", "4h", "1d"]
+    timeframes = list(dict.fromkeys(default_timeframes + cfg_timeframes))
+
+    default_symbol_a = st.session_state.get("ui_symbol_a", symbols[0])
+    if default_symbol_a not in symbols:
+        default_symbol_a = symbols[0]
+
+    default_symbol_b = st.session_state.get("ui_symbol_b", symbols[1] if len(symbols) > 1 else symbols[0])
+    if default_symbol_b not in symbols:
+        default_symbol_b = symbols[0]
+
+    default_tf_a = st.session_state.get("ui_tf_a", timeframes[0])
+    if default_tf_a not in timeframes:
+        default_tf_a = timeframes[0]
+
+    default_tf_b = st.session_state.get("ui_tf_b", timeframes[0])
+    if default_tf_b not in timeframes:
+        default_tf_b = timeframes[0]
 
     st.markdown("<div class='dashboard-title'>TRADING DECISION DASHBOARD</div>", unsafe_allow_html=True)
 
-    start_col, stop_col, symbol_col, tf_col, refresh_col, auto_col = st.columns([1, 1, 2, 1, 1, 1])
-    start_clicked = start_col.button("START", use_container_width=True, type="primary", key="ui_start")
-    stop_clicked = stop_col.button("STOP", use_container_width=True, key="ui_stop")
-
-    symbol = symbol_col.selectbox("Asset", options=symbols, index=symbols.index(default_symbol), key="ui_symbol")
-    timeframe = tf_col.selectbox("TF", options=timeframes, index=timeframes.index(default_tf), key="ui_tf")
+    c1, c2, c3, c4 = st.columns([1, 1, 1, 1])
+    start_clicked = c1.button("START", use_container_width=True, type="primary", key="ui_start")
+    stop_clicked = c2.button("STOP", use_container_width=True, key="ui_stop")
     refresh_seconds = int(
-        refresh_col.number_input(
+        c3.number_input(
             "Refresh (sec)",
             min_value=5,
             max_value=300,
@@ -240,7 +424,7 @@ def run_app() -> None:
             key="ui_refresh_seconds",
         )
     )
-    auto_refresh = auto_col.checkbox("Auto", value=bool(st.session_state.get("ui_auto_refresh", True)), key="ui_auto_refresh")
+    auto_refresh = c4.checkbox("Auto Refresh", value=bool(st.session_state.get("ui_auto_refresh", True)), key="ui_auto_refresh")
 
     view_mode = st.radio(
         "View",
@@ -248,6 +432,12 @@ def run_app() -> None:
         horizontal=True,
         key="ui_view_mode",
     )
+
+    p1, p2, p3, p4 = st.columns([2, 1, 2, 1])
+    symbol_a = p1.selectbox("Asset A", options=symbols, index=symbols.index(default_symbol_a), key="ui_symbol_a")
+    tf_a = p2.selectbox("TF A", options=timeframes, index=timeframes.index(default_tf_a), key="ui_tf_a")
+    symbol_b = p3.selectbox("Asset B", options=symbols, index=symbols.index(default_symbol_b), key="ui_symbol_b")
+    tf_b = p4.selectbox("TF B", options=timeframes, index=timeframes.index(default_tf_b), key="ui_tf_b")
 
     if start_clicked:
         ok, message = _start_runner()
@@ -270,64 +460,49 @@ def run_app() -> None:
         (
             "<div class='topline'>"
             f"[<span class='{state_css}'>{state}</span><span class='status-dot'>{dot}</span>] "
-            f"Asset: <strong>{symbol}</strong> &nbsp;&nbsp; TF: <strong>{timeframe}</strong> "
-            f"&nbsp;&nbsp; PID: <strong>{pid if pid else '-'}</strong>"
+            f"A: <strong>{symbol_a}</strong> ({tf_a}) &nbsp;&nbsp; "
+            f"B: <strong>{symbol_b}</strong> ({tf_b}) &nbsp;&nbsp; "
+            f"PID: <strong>{pid if pid else '-'}</strong>"
             "</div>"
         ),
         unsafe_allow_html=True,
     )
 
-    csv_base_path = _resolve_csv_base_path(config)
-    latest_row, latest_file = load_latest_csv_row(csv_base_path, symbol)
-
+    left, right = st.columns(2, gap="large")
+    ts_a = "-"
+    ts_b = "-"
     if view_mode == "Signal Board (Live)":
-        if latest_row and latest_file:
-            render_signal_layout_csv(symbol, latest_row, latest_file)
-        else:
-            st.info(
-                "Nu exista date CSV pentru simbol. Apasa START si asteapta primul ciclu de calcul."
-            )
-
-        st.subheader("Events")
-        render_events(_collect_log_events(60))
-
+        with left:
+            ts_a = _render_live_panel("Panel A", symbol_a, tf_a, csv_base_path)
+        with right:
+            ts_b = _render_live_panel("Panel B", symbol_b, tf_b, csv_base_path)
     elif view_mode == "Signal Board (CSV Logs)":
-        files = _list_symbol_csv_files(csv_base_path, symbol)
-        if not files:
-            st.info("Nu exista fisiere CSV pentru simbolul selectat.")
-        else:
-            file_path = st.selectbox("CSV File", options=files, format_func=lambda p: p.name, key="ui_csv_file")
-            try:
-                df = pd.read_csv(file_path, dtype=str)
-            except Exception as exc:
-                st.error(f"Nu pot citi fisierul CSV: {exc}")
-                df = pd.DataFrame()
-
-            if df.empty:
-                st.info("Fisierul CSV selectat nu contine date.")
-            else:
-                max_idx = len(df) - 1
-                row_index = st.slider("CSV Row", min_value=0, max_value=max_idx, value=max_idx, key="ui_csv_row")
-                row = _to_string_row(df.iloc[row_index])
-                render_signal_layout_csv(symbol, row, file_path)
-                st.markdown("#### Preview ultimele 25 randuri")
-                st.dataframe(df.tail(25), use_container_width=True, hide_index=True)
-
+        with left:
+            ts_a = _render_csv_panel("left", "Panel A", symbol_a, tf_a, csv_base_path)
+        with right:
+            ts_b = _render_csv_panel("right", "Panel B", symbol_b, tf_b, csv_base_path)
     else:
-        if latest_row and latest_file:
-            st.caption(f"Source: {latest_file.name} | Last row timestamp: {latest_row.get('timestamp', '-')}")
-            df = build_indicator_dataframe_from_csv(latest_row)
-            if df.empty:
-                st.info("Nu exista coloane de indicator in ultimul rand CSV.")
-            else:
-                st.dataframe(df, use_container_width=True, hide_index=True)
-            with st.expander("Raw CSV row"):
-                st.json(latest_row)
-        else:
-            st.info("Nu exista date pentru modul Classic Table.")
+        with left:
+            ts_a = _render_classic_panel("Panel A", symbol_a, tf_a, csv_base_path)
+        with right:
+            ts_b = _render_classic_panel("Panel B", symbol_b, tf_b, csv_base_path)
 
-    timestamp = latest_row.get("timestamp") if latest_row else "-"
-    st.caption(f"Last Update: {timestamp} | Refresh: {refresh_seconds}s | Logs: {csv_base_path}")
+    st.subheader("Events")
+    ev1, ev2 = st.columns([3, 1])
+    selected_levels = ev1.multiselect(
+        "Event levels",
+        options=LOG_LEVELS,
+        default=["ERROR", "WARNING"],
+        key="ui_event_levels",
+    )
+    event_limit = ev2.slider("Rows", min_value=20, max_value=300, value=80, step=10, key="ui_event_limit")
+    if not selected_levels:
+        selected_levels = ["ERROR", "WARNING"]
+    render_events(_collect_log_events(event_limit, selected_levels))
+
+    st.caption(
+        f"Last Update A: {ts_a} | Last Update B: {ts_b} | Refresh: {refresh_seconds}s | Logs: {csv_base_path}"
+    )
 
     if running and auto_refresh:
         time.sleep(max(5, refresh_seconds))

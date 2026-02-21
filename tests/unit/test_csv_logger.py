@@ -154,3 +154,44 @@ def test_csv_logger_rotates_when_headers_change(tmp_path, monkeypatch):
         first = next(reader)
     assert "sig_ema_bias" in first
     assert "conf_ema_bias" in first
+
+
+def test_csv_logger_uses_candle_timestamp_aligned_to_minute(tmp_path):
+    logger = CSVMinuteLogger(
+        base_path=str(tmp_path),
+        timezone="UTC",
+        rotate_daily=True,
+        timestamp_source="candle",
+        minute_precision=True,
+    )
+    indicators = [
+        IndicatorResult(
+            name="ema_bias",
+            category="trend",
+            timeframe="1m",
+            value={"fast": 2, "slow": 1},
+            state=SignalState.BUY,
+            confidence=77.0,
+            reason="cross up",
+            weight=1.0,
+        )
+    ]
+    candle_time = datetime(2025, 1, 1, 12, 34, 56, tzinfo=timezone.utc)
+
+    logger.log(
+        symbol="BTCUSDT",
+        timeframe="1m",
+        ohlcv={"open": 1, "high": 2, "low": 0.5, "close": 1.5, "volume": 10},
+        indicators=indicators,
+        aggregate=None,
+        include_indicators=["ema_bias"],
+        market_regime=MarketRegime.UNKNOWN,
+        sentiment=None,
+        candle_timestamp=candle_time,
+    )
+
+    csv_path = tmp_path / "2025-01-01_BTCUSDT.csv"
+    with csv_path.open(newline="", encoding="utf-8") as handle:
+        reader = csv.DictReader(handle)
+        first = next(reader)
+    assert first["timestamp"] == "2025-01-01T12:34:00+00:00"
