@@ -1,6 +1,7 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import csv
+import html
 import json
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -22,15 +23,15 @@ CATEGORY_ORDER = [
     "other",
 ]
 CATEGORY_LABELS = {
-    "trend": "Trend Indicators",
-    "momentum": "Momentum Indicators",
-    "volume": "Volume Indicators",
-    "volatility": "Volatility Indicators",
-    "structure": "Structure Indicators",
-    "context": "Context Indicators",
-    "sentiment": "Sentiment (Exchange)",
-    "external_sentiment": "External Sentiment",
-    "other": "Other Indicators",
+    "trend": "TREND INDICATORS",
+    "momentum": "MOMENTUM INDICATORS",
+    "volume": "VOLUME INDICATORS",
+    "volatility": "VOLATILITY INDICATORS",
+    "structure": "STRUCTURE INDICATORS",
+    "context": "CONTEXT INDICATORS",
+    "sentiment": "SENTIMENT (BINANCE API)",
+    "external_sentiment": "EXTERNAL SENTIMENT",
+    "other": "OTHER INDICATORS",
 }
 INDICATOR_CATEGORY_MAP = {
     "candle_efficiency": "price_action",
@@ -73,6 +74,27 @@ INDICATOR_CATEGORY_MAP = {
     "darvas_box": "context",
     "astro_calendar": "context",
 }
+INDICATOR_DISPLAY_NAMES = {
+    "ema_bias": "EMA Bias (13/34/89)",
+    "market_structure": "Market Structure",
+    "adx": "ADX",
+    "supertrend": "Supertrend",
+    "rsi_state": "RSI (14)",
+    "macd": "MACD Histogram",
+    "stochastic_rsi": "Stoch RSI",
+    "cvd": "CVD",
+    "obv_flow": "OBV Trend",
+    "vwap_bias": "Price vs VWAP",
+    "volume_oscillator": "Volume vs Average",
+    "bb_squeeze_expand": "BB Squeeze",
+    "atr_regime": "ATR Relative",
+    "darvas_box": "Darvas Box",
+    "astro_calendar": "Astro Tag",
+    "funding_rate": "Funding Rate",
+    "open_interest": "Open Interest",
+    "long_short_ratio": "Long/Short Ratio",
+    "fear_greed": "Fear & Greed Index",
+}
 SENTIMENT_FIELDS = [
     "funding_rate",
     "open_interest",
@@ -105,15 +127,27 @@ def _normalize_signal(raw: object) -> str:
 
 def _signal_label(signal: str) -> str:
     normalized = _normalize_signal(signal)
-    if normalized == "BUY":
-        return "BUY"
-    if normalized == "SELL":
-        return "SELL"
-    if normalized == "NO_TRADE":
-        return "NO_TRADE"
-    if normalized == "WAIT":
-        return "WAIT"
+    if normalized in {"BUY", "SELL", "NO_TRADE", "WAIT"}:
+        return normalized
     return "NEUTRAL"
+
+
+def _signal_emoji(signal: str) -> str:
+    normalized = _normalize_signal(signal)
+    if normalized == "BUY":
+        return "🟢"
+    if normalized == "SELL":
+        return "🔴"
+    return "🟡"
+
+
+def _signal_css(signal: str) -> str:
+    normalized = _normalize_signal(signal)
+    if normalized == "BUY":
+        return "sig-buy"
+    if normalized == "SELL":
+        return "sig-sell"
+    return "sig-neutral"
 
 
 def _safe_float(value: object, default: float = 0.0) -> float:
@@ -137,6 +171,22 @@ def _format_indicator_value(value: object, max_items: int = 4) -> str:
             sample += ", ..."
         return sample
     return str(value)
+
+
+def _format_compact_text(row: Dict[str, object]) -> str:
+    condition = str(row.get("condition") or "").strip()
+    if condition and condition != "-":
+        return condition
+    value = str(row.get("value") or "").strip()
+    if not value:
+        return _signal_label(str(row.get("signal")))
+    return value if len(value) <= 64 else f"{value[:61]}..."
+
+
+def _friendly_indicator_name(name: str) -> str:
+    if name in INDICATOR_DISPLAY_NAMES:
+        return INDICATOR_DISPLAY_NAMES[name]
+    return name.replace("_", " ").title()
 
 
 def _category_for_indicator(name: str, fallback: str = "other") -> str:
@@ -243,16 +293,33 @@ def _rows_from_csv(csv_row: Dict[str, str]) -> List[Dict[str, object]]:
         if value in (None, ""):
             continue
         rows.append(
-                {
-                    "category": "external_sentiment" if key == "fear_greed" else "sentiment",
-                    "indicator": key,
-                    "signal": "NEUTRAL",
-                    "confidence": 0.0,
+            {
+                "category": "external_sentiment" if key == "fear_greed" else "sentiment",
+                "indicator": key,
+                "signal": "NEUTRAL",
+                "confidence": 0.0,
                 "value": value,
                 "condition": "csv sentiment",
             }
         )
     return rows
+
+
+def build_indicator_dataframe_from_csv(csv_row: Dict[str, str]) -> pd.DataFrame:
+    rows = _rows_from_csv(csv_row)
+    items = []
+    for row in rows:
+        items.append(
+            {
+                "Category": str(row.get("category", "other")).upper(),
+                "Indicator": _friendly_indicator_name(str(row.get("indicator", ""))),
+                "Signal": _signal_label(str(row.get("signal", "NEUTRAL"))),
+                "Confidence %": float(row.get("confidence") or 0.0),
+                "Condition": str(row.get("condition") or "-"),
+                "Value": str(row.get("value") or "-"),
+            }
+        )
+    return pd.DataFrame(items)
 
 
 def _indicator_value_map(indicators: List[IndicatorResult]) -> Dict[str, Dict[str, object]]:
@@ -314,17 +381,26 @@ def _estimate_trade_plan(
 
 
 def _confidence_stars(score_pct: float) -> str:
-    # 5-star approximation for summary block.
     filled = max(1, min(5, int(round(score_pct / 20.0))))
     return "★" * filled + "☆" * (5 - filled)
 
 
-def _render_trade_plan(plan: Dict[str, float]) -> None:
+def _confidence_label(score_pct: float) -> str:
+    if score_pct >= 75:
+        return "HIGH"
+    if score_pct >= 55:
+        return "MEDIUM"
+    return "LOW"
+
+
+def _render_trade_plan(plan: Dict[str, float]) -> str:
     if not plan:
-        return
-    st.markdown(f"**Suggested TP:** {plan['tp']:.2f}")
-    st.markdown(f"**Suggested SL:** {plan['sl']:.2f}")
-    st.markdown(f"**Risk/Reward:** 1:{plan['rr']:.2f}")
+        return ""
+    return (
+        f"<div class='summary-line'><span>SUGGESTED TP:</span><strong>{plan['tp']:.2f}</strong></div>"
+        f"<div class='summary-line'><span>SUGGESTED SL:</span><strong>{plan['sl']:.2f}</strong></div>"
+        f"<div class='summary-line'><span>RISK/REWARD:</span><strong>1:{plan['rr']:.2f}</strong></div>"
+    )
 
 
 def _render_grouped_signal_tables(rows: List[Dict[str, object]]) -> None:
@@ -335,20 +411,32 @@ def _render_grouped_signal_tables(rows: List[Dict[str, object]]) -> None:
         category_rows = [row for row in rows if row.get("category") == category]
         if not category_rows:
             continue
-        table = pd.DataFrame(
-            [
-                {
-                    "Indicator": row["indicator"],
-                    "Signal": _signal_label(str(row["signal"])),
-                    "Confidence %": row["confidence"],
-                    "Value": row["value"],
-                    "Condition": row["condition"],
-                }
-                for row in category_rows
-            ]
+
+        html_rows: List[str] = []
+        for row in category_rows:
+            signal = str(row.get("signal") or "NEUTRAL")
+            css_class = _signal_css(signal)
+            indicator = html.escape(_friendly_indicator_name(str(row.get("indicator") or "-")))
+            compact = html.escape(_format_compact_text(row))
+            emoji = _signal_emoji(signal)
+            label = _signal_label(signal)
+            html_rows.append(
+                "<div class='signal-row'>"
+                f"<div class='signal-indicator'>{indicator}</div>"
+                f"<div class='signal-value {css_class}'>{emoji} {label} · {compact}</div>"
+                "</div>"
+            )
+
+        card_html = (
+            "<div class='signal-card'>"
+            "<div class='signal-card-header'>"
+            f"<div class='signal-card-title'>{html.escape(CATEGORY_LABELS.get(category, category.title()))}</div>"
+            "<div class='signal-card-col'>SIGNAL</div>"
+            "</div>"
+            f"{''.join(html_rows)}"
+            "</div>"
         )
-        st.markdown(f"#### {CATEGORY_LABELS.get(category, category.title())}")
-        st.dataframe(table, use_container_width=True, hide_index=True)
+        st.markdown(card_html, unsafe_allow_html=True)
 
 
 def _render_signal_summary(
@@ -362,68 +450,80 @@ def _render_signal_summary(
     if total <= 0:
         st.info("No signal summary available.")
         return
+
     buy_count = sum(1 for row in rows if _normalize_signal(row.get("signal")) == "BUY")
     sell_count = sum(1 for row in rows if _normalize_signal(row.get("signal")) == "SELL")
     neutral_count = sum(
         1 for row in rows if _normalize_signal(row.get("signal")) in {"NEUTRAL", "WAIT", "NO_TRADE"}
     )
 
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Bullish Signals", f"{buy_count}/{total}", f"{(buy_count / total) * 100:.1f}%")
-    col2.metric("Bearish Signals", f"{sell_count}/{total}", f"{(sell_count / total) * 100:.1f}%")
-    col3.metric("Neutral Signals", f"{neutral_count}/{total}", f"{(neutral_count / total) * 100:.1f}%")
+    buy_ratio = (buy_count / total) * 100
+    sell_ratio = (sell_count / total) * 100
+    neutral_ratio = (neutral_count / total) * 100
 
-    regime_text = market_regime.value if hasattr(market_regime, "value") else str(market_regime)
-    st.markdown(f"**Market Regime:** {regime_text}")
+    final_state = "NEUTRAL"
+    buy_score = buy_ratio
+    sell_score = sell_ratio
+    no_trade_score = neutral_ratio
+    reason = ""
+    confidence_level = _confidence_label(max(buy_score, sell_score))
 
     if isinstance(aggregate, AggregateResult):
-        st.markdown(f"**Final State:** {aggregate.final_state.value}")
-        st.markdown(
-            f"**Scores:** buy={aggregate.buy_pct:.1f}% | sell={aggregate.sell_pct:.1f}% | no_trade={aggregate.no_trade_pct:.1f}%"
-        )
-        dominant = max(aggregate.buy_pct, aggregate.sell_pct)
-        recommendation = "LONG BIAS" if aggregate.buy_pct > aggregate.sell_pct else "SHORT BIAS"
-        if aggregate.final_state.value in {"WAIT", "NO_TRADE", "NEUTRAL"}:
-            recommendation = aggregate.final_state.value
-        st.markdown(f"**Recommendation:** {recommendation}")
-        st.markdown(f"**Confidence:** {_confidence_stars(dominant)} ({aggregate.confidence_level})")
-        st.progress(min(1.0, max(0.0, dominant / 100.0)))
-        if aggregate.reason:
-            st.markdown(f"**Reason:** {aggregate.reason}")
-        _render_trade_plan(trade_plan or {})
-        if ml_result:
-            st.markdown(
-                f"**ML Advisory:** {ml_result.get('label', 'neutral')} "
-                f"(conf {float(ml_result.get('confidence', 0.0)) * 100:.1f}%, p_up {float(ml_result.get('probability_up', 0.0)) * 100:.1f}%)"
-            )
-        return
-
-    if isinstance(aggregate, dict):
+        final_state = _normalize_signal(aggregate.final_state.value)
+        buy_score = float(aggregate.buy_pct)
+        sell_score = float(aggregate.sell_pct)
+        no_trade_score = float(aggregate.no_trade_pct)
+        reason = aggregate.reason or ""
+        confidence_level = str(aggregate.confidence_level or confidence_level)
+    elif isinstance(aggregate, dict):
         final_state = _normalize_signal(aggregate.get("final_state"))
-        buy_score = _safe_float(aggregate.get("buy_score"), 0.0)
-        sell_score = _safe_float(aggregate.get("sell_score"), 0.0)
-        no_trade_score = _safe_float(aggregate.get("no_trade_score"), 0.0)
-        dominant = max(buy_score, sell_score)
-        st.markdown(f"**Final State:** {final_state}")
-        st.markdown(
-            f"**Scores:** buy={buy_score:.1f}% | sell={sell_score:.1f}% | no_trade={no_trade_score:.1f}%"
+        buy_score = _safe_float(aggregate.get("buy_score"), buy_score)
+        sell_score = _safe_float(aggregate.get("sell_score"), sell_score)
+        no_trade_score = _safe_float(aggregate.get("no_trade_score"), no_trade_score)
+
+    dominant = max(buy_score, sell_score)
+    recommendation = "LONG BIAS" if buy_score > sell_score else "SHORT BIAS"
+    if final_state in {"WAIT", "NO_TRADE", "NEUTRAL"}:
+        recommendation = final_state
+
+    trade_plan_html = _render_trade_plan(trade_plan or {})
+    regime_text = market_regime.value if hasattr(market_regime, "value") else str(market_regime)
+    ml_line = ""
+    if ml_result:
+        ml_label = str(ml_result.get("ml_label") or ml_result.get("label") or "neutral")
+        ml_conf = _safe_float(ml_result.get("ml_confidence") or ml_result.get("confidence"), 0.0)
+        ml_prob = _safe_float(ml_result.get("ml_probability_up") or ml_result.get("probability_up"), 0.0)
+        if ml_conf > 1:
+            ml_conf = ml_conf / 100.0
+        if ml_prob > 1:
+            ml_prob = ml_prob / 100.0
+        ml_line = (
+            "<div class='summary-line'>"
+            f"<span>ML ADVISORY:</span><strong>{html.escape(ml_label.upper())} "
+            f"(conf {ml_conf * 100:.1f}%, p_up {ml_prob * 100:.1f}%)</strong></div>"
         )
-        recommendation = "LONG BIAS" if buy_score > sell_score else "SHORT BIAS"
-        if final_state in {"WAIT", "NO_TRADE", "NEUTRAL"}:
-            recommendation = final_state
-        st.markdown(f"**Recommendation:** {recommendation}")
-        st.markdown(f"**Confidence:** {_confidence_stars(dominant)}")
-        st.progress(min(1.0, max(0.0, dominant / 100.0)))
-        _render_trade_plan(trade_plan or {})
-        if ml_result:
-            ml_label = str(ml_result.get("ml_label") or ml_result.get("label") or "neutral")
-            ml_conf = _safe_float(ml_result.get("ml_confidence") or ml_result.get("confidence"), 0.0)
-            ml_prob = _safe_float(ml_result.get("ml_probability_up") or ml_result.get("probability_up"), 0.0)
-            if ml_conf > 1:
-                ml_conf = ml_conf / 100.0
-            if ml_prob > 1:
-                ml_prob = ml_prob / 100.0
-            st.markdown(f"**ML Advisory:** {ml_label} (conf {ml_conf * 100:.1f}%, p_up {ml_prob * 100:.1f}%)")
+
+    summary_html = (
+        "<div class='summary-card'>"
+        "<div class='summary-title'>SUMMARY</div>"
+        f"<div class='summary-line'><span>BULLISH SIGNALS:</span><strong>{buy_count}/{total} ({buy_ratio:.1f}%)</strong></div>"
+        f"<div class='summary-line'><span>BEARISH SIGNALS:</span><strong>{sell_count}/{total} ({sell_ratio:.1f}%)</strong></div>"
+        f"<div class='summary-line'><span>NEUTRAL SIGNALS:</span><strong>{neutral_count}/{total} ({neutral_ratio:.1f}%)</strong></div>"
+        "<div class='summary-progress-track'>"
+        f"<div class='summary-progress-fill' style='width:{max(0.0, min(100.0, dominant)):.1f}%'></div>"
+        "</div>"
+        f"<div class='summary-line'><span>RECOMMENDATION:</span><strong class='summary-highlight'>{html.escape(recommendation)}</strong></div>"
+        f"<div class='summary-line'><span>CONFIDENCE:</span><strong>{_confidence_stars(dominant)} ({html.escape(confidence_level)})</strong></div>"
+        f"<div class='summary-line'><span>FINAL STATE:</span><strong>{html.escape(final_state)}</strong></div>"
+        f"<div class='summary-line'><span>SCORES:</span><strong>BUY {buy_score:.1f}% | SELL {sell_score:.1f}% | NO-TRADE {no_trade_score:.1f}%</strong></div>"
+        f"<div class='summary-line'><span>MARKET REGIME:</span><strong>{html.escape(regime_text)}</strong></div>"
+        f"{trade_plan_html}"
+        f"{ml_line}"
+        "</div>"
+    )
+    st.markdown(summary_html, unsafe_allow_html=True)
+    if reason:
+        st.caption(f"Reason: {reason}")
 
 
 def render_signal_layout_live(
@@ -474,7 +574,9 @@ def render_signal_layout_csv(symbol: str, csv_row: Dict[str, str], source_file: 
         "ml_confidence": csv_row.get("ml_confidence"),
         "ml_probability_up": csv_row.get("ml_probability_up"),
     }
-    st.caption(f"CSV source: {source_file.name} | Symbol: {symbol} | Timestamp: {csv_row.get('timestamp', '-')}")
+    st.caption(
+        f"CSV source: {source_file.name} | Symbol: {symbol} | Timestamp: {csv_row.get('timestamp', '-') }"
+    )
     _render_grouped_signal_tables(rows)
     _render_signal_summary(
         rows,
@@ -592,25 +694,16 @@ def render_context(
         st.markdown(f"**Smart Money:** bos={bos} choch={choch} sweep_high={sweep_h} sweep_low={sweep_l}")
 
     if sentiment:
-        fr = sentiment.get("funding_rate")
-        oi = sentiment.get("open_interest")
-        ls = sentiment.get("long_short_ratio")
-        fg = sentiment.get("fear_greed")
-        buy_sell = sentiment.get("buy_sell_ratio")
-        taker_buy_pct = sentiment.get("taker_buy_pct")
-        price_change = sentiment.get("price_change_pct")
-        trade_buy = sentiment.get("trade_buy_volume")
-        trade_sell = sentiment.get("trade_sell_volume")
         st.markdown("**Sentiment:**")
-        st.markdown(f"- funding_rate: {fr}")
-        st.markdown(f"- open_interest: {oi}")
-        st.markdown(f"- long_short_ratio: {ls}")
-        st.markdown(f"- fear_greed: {fg}")
-        st.markdown(f"- buy/sell ratio: {buy_sell}")
-        st.markdown(f"- taker_buy_pct: {taker_buy_pct}")
-        st.markdown(f"- trade_buy_volume: {trade_buy}")
-        st.markdown(f"- trade_sell_volume: {trade_sell}")
-        st.markdown(f"- 24h change %: {price_change}")
+        st.markdown(f"- funding_rate: {sentiment.get('funding_rate')}")
+        st.markdown(f"- open_interest: {sentiment.get('open_interest')}")
+        st.markdown(f"- long_short_ratio: {sentiment.get('long_short_ratio')}")
+        st.markdown(f"- fear_greed: {sentiment.get('fear_greed')}")
+        st.markdown(f"- buy/sell ratio: {sentiment.get('buy_sell_ratio')}")
+        st.markdown(f"- taker_buy_pct: {sentiment.get('taker_buy_pct')}")
+        st.markdown(f"- trade_buy_volume: {sentiment.get('trade_buy_volume')}")
+        st.markdown(f"- trade_sell_volume: {sentiment.get('trade_sell_volume')}")
+        st.markdown(f"- 24h change %: {sentiment.get('price_change_pct')}")
 
     if ml_result:
         st.markdown("**ML Advisory:**")
@@ -624,4 +717,13 @@ def render_events(events) -> None:
         st.info("No events yet.")
         return
     for evt in events:
-        st.markdown(f"`{evt.timestamp.isoformat()}` **{evt.level.upper()}** {evt.message}")
+        if hasattr(evt, "timestamp") and hasattr(evt, "level") and hasattr(evt, "message"):
+            st.markdown(f"`{evt.timestamp.isoformat()}` **{evt.level.upper()}** {evt.message}")
+            continue
+        if isinstance(evt, dict):
+            level = str(evt.get("level", "info")).upper()
+            ts = str(evt.get("timestamp", "-"))
+            message = str(evt.get("message", evt))
+            st.markdown(f"`{ts}` **{level}** {message}")
+            continue
+        st.markdown(f"- {evt}")

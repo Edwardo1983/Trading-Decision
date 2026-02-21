@@ -43,6 +43,10 @@ python scripts\download_ephemeris.py
 ```
 streamlit run src\ui\dashboard.py
 ```
+Din folderul baza (`Trading Decision Dashboard/`), foloseste:
+```
+python -m streamlit run main\src\ui\dashboard.py
+```
 
 ## Instalare pas cu pas (Linux/Mac)
 1) Creeaza venv
@@ -109,7 +113,9 @@ Sectiuni cheie:
 - Sentiment futures functioneaza doar cu `market_type: futures`
 - Pentru spot folosim proxy buy/sell ratio din 24h ticker + optional recent trades
 - MEXC WS actualizeaza candle-ul curent in timp real (fara flag explicit de inchidere)
-- In UI, modul `Signal Board (CSV Logs)` afiseaza ultimul rand din CSV pe simbol
+- In UI, butoanele `START/STOP` lanseaza/opresc engine-ul CLI (`python -m app start/stop`)
+- In UI, modul `Signal Board (Live)` afiseaza ultima stare live din CSV-ul curent
+- In UI, modul `Signal Board (CSV Logs)` permite selectie fisier + rand CSV
 - Astro este context experimental (implicit NEUTRAL; optional bias directional din config)
 - Darvas foloseste confirmare explicita (`confirmation_bars`) + suport volum/volatilitate
 - Astro este experimental (nu predictor validat)
@@ -165,6 +171,10 @@ python scripts\download_ephemeris.py
 5) Run UI
 ```
 streamlit run src\ui\dashboard.py
+```
+From the workspace root (`Trading Decision Dashboard/`), use:
+```
+python -m streamlit run main\src\ui\dashboard.py
 ```
 
 ## Step-by-step setup (Linux/Mac)
@@ -232,7 +242,9 @@ Key sections:
 - Futures sentiment works only with `market_type: futures`
 - Spot uses buy/sell proxy from 24h ticker + optional recent trades
 - MEXC WS updates the current candle in real time (no explicit close flag)
-- In UI, `Signal Board (CSV Logs)` displays the latest CSV row per symbol
+- In UI, `START/STOP` controls launch/stop the CLI engine (`python -m app start/stop`)
+- In UI, `Signal Board (Live)` shows the latest live state from the active CSV
+- In UI, `Signal Board (CSV Logs)` allows selecting file and row from CSV logs
 - Astro is experimental context (default NEUTRAL; optional directional bias in config)
 - Darvas uses explicit breakout confirmation (`confirmation_bars`) with volume/volatility support
 - Astro is experimental (not a validated predictor)
