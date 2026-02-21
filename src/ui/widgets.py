@@ -81,6 +81,7 @@ def render_context(indicators: List[IndicatorResult], market_regime: MarketRegim
 
     astro = next((i for i in indicators if i.name == "astro_calendar"), None)
     darvas = next((i for i in indicators if i.name == "darvas_box"), None)
+    smart = next((i for i in indicators if i.name == "smart_money"), None)
 
     if astro and isinstance(astro.value, dict):
         label = astro.value.get("label")

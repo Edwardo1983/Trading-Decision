@@ -75,24 +75,22 @@ class MFIIndicator(IndicatorBase):
         reason = "MFI neutral"
         confidence = 40.0
 
-        if mfi_now <= oversold:
-            if leaving_oversold:
-                state = SignalState.BUY
-                reason = "MFI leaving oversold zone"
-                confidence = 80.0
-            else:
-                state = SignalState.BUY
-                reason = f"MFI oversold ({mfi_now:.1f})"
-                confidence = 70.0
+        if leaving_oversold:
+            state = SignalState.BUY
+            reason = "MFI leaving oversold zone"
+            confidence = 80.0
+        elif leaving_overbought:
+            state = SignalState.SELL
+            reason = "MFI leaving overbought zone"
+            confidence = 80.0
+        elif mfi_now <= oversold:
+            state = SignalState.BUY
+            reason = f"MFI oversold ({mfi_now:.1f})"
+            confidence = 70.0
         elif mfi_now >= overbought:
-            if leaving_overbought:
-                state = SignalState.SELL
-                reason = "MFI leaving overbought zone"
-                confidence = 80.0
-            else:
-                state = SignalState.SELL
-                reason = f"MFI overbought ({mfi_now:.1f})"
-                confidence = 70.0
+            state = SignalState.SELL
+            reason = f"MFI overbought ({mfi_now:.1f})"
+            confidence = 70.0
         elif mfi_now > 50:
             state = SignalState.BUY
             reason = "MFI shows buying pressure"

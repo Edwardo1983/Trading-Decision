@@ -17,7 +17,7 @@ Sistem de suport decizional pentru trading crypto (BTC/altcoins). Agrega indicat
 - Astro calendar experimental (Moon phases + aspects)
 
 ## Cerinte
-- Python 3.12 recomandat (3.11 OK)
+- Python 3.12+ (obligatoriu)
 - Windows / Mac / Linux
 
 ## Instalare pas cu pas (Windows)
@@ -73,6 +73,7 @@ python -m app stop
 python -m app status
 python -m app validate-config
 ```
+Comenzile se ruleaza din folderul `main/`.
 
 ## Configurare
 - Fisier principal: `config/default.yaml`
@@ -119,7 +120,7 @@ Decision-support system for crypto trading (BTC/altcoins). Aggregates technical 
 - Experimental astro calendar (Moon phases + aspects)
 
 ## Requirements
-- Python 3.12 recommended (3.11 OK)
+- Python 3.12+ (required)
 - Windows / Mac / Linux
 
 ## Step-by-step setup (Windows)
@@ -175,6 +176,7 @@ python -m app stop
 python -m app status
 python -m app validate-config
 ```
+Run CLI commands from the `main/` folder.
 
 ## Configuration
 - Main file: `config/default.yaml`

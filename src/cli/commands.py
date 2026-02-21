@@ -4,7 +4,6 @@ import argparse
 import logging
 import os
 import sys
-from pathlib import Path
 
 from app.main import create_runner
 from core.logger import setup_logging
@@ -18,7 +17,7 @@ STOP_FILE = logs_dir() / "stop.flag"
 
 
 def _write_pid() -> None:
-    logs_dir().mkdir(parents=True, exist_ok=True)
+    PID_FILE.parent.mkdir(parents=True, exist_ok=True)
     PID_FILE.write_text(str(os.getpid()), encoding="utf-8")
 
 
@@ -27,30 +26,74 @@ def _clear_pid() -> None:
         PID_FILE.unlink()
 
 
+def _clear_stop_flag() -> None:
+    if STOP_FILE.exists():
+        STOP_FILE.unlink()
+
+
+def _pid_running(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        try:
+            import ctypes
+
+            PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+            handle = ctypes.windll.kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+            if handle:
+                ctypes.windll.kernel32.CloseHandle(handle)
+                return True
+            return False
+        except Exception:
+            return False
+    try:
+        os.kill(pid, 0)
+    except PermissionError:
+        return True
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return False
+    return True
+
+
 def cmd_start() -> None:
     setup_logging()
+    _clear_stop_flag()
     runner = create_runner()
     _write_pid()
     try:
         runner.run_forever(stop_flag=STOP_FILE)
     finally:
         _clear_pid()
-        if STOP_FILE.exists():
-            STOP_FILE.unlink()
+        _clear_stop_flag()
 
 
 def cmd_stop() -> None:
-    logs_dir().mkdir(parents=True, exist_ok=True)
+    STOP_FILE.parent.mkdir(parents=True, exist_ok=True)
     STOP_FILE.write_text("stop", encoding="utf-8")
     print("Stop signal written.")
 
 
 def cmd_status() -> None:
-    if PID_FILE.exists():
-        pid = PID_FILE.read_text(encoding="utf-8").strip()
-        print(f"Runner PID: {pid}")
-    else:
+    if not PID_FILE.exists():
         print("Runner not running (pid file not found).")
+        return
+
+    try:
+        pid_text = PID_FILE.read_text(encoding="utf-8-sig").strip()
+        pid = int(pid_text)
+    except (OSError, ValueError):
+        _clear_pid()
+        print("Runner not running (invalid pid file).")
+        return
+
+    if _pid_running(pid):
+        print(f"Runner PID: {pid}")
+        return
+
+    _clear_pid()
+    print("Runner not running (stale pid file removed).")
 
 
 def cmd_validate_config() -> None:

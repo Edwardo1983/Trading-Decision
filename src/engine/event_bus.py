@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import deque
-from datetime import datetime
+from datetime import datetime, timezone
 from threading import Lock
 from typing import Callable, Deque, List, Optional
 
@@ -15,7 +15,7 @@ class EventBus:
         self._subscribers: List[Callable[[Event], None]] = []
 
     def publish(self, level: str, message: str, context: Optional[dict] = None) -> None:
-        event = Event(datetime.utcnow(), level, message, context or {})
+        event = Event(datetime.now(timezone.utc), level, message, context or {})
         with self._lock:
             self._events.appendleft(event)
             for sub in self._subscribers:

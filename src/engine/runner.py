@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime
 from pathlib import Path
 from threading import Thread
 from typing import Dict, List, Optional
@@ -236,8 +235,34 @@ class Runner:
             # Binance marks closed candles with x=true
             closed = payload.get("k", {}).get("x", False)
             if closed:
-                self.buffers[timeframe].append(candle)
-                self.event_bus.publish("info", "WS candle closed", {"tf": timeframe, "provider": "binance"})
+                buffer = self.buffers[timeframe]
+                last = buffer.last()
+                if last and candle.timestamp < last.timestamp:
+                    continue
+                action = "append"
+                if last and candle.timestamp == last.timestamp:
+                    buffer.replace_last(candle)
+                    action = "replace"
+                else:
+                    buffer.append(candle)
+                self.event_bus.publish(
+                    "info",
+                    "WS candle closed",
+                    {"tf": timeframe, "provider": "binance", "action": action},
+                )
+
+    def _resolve_regime_timeframe(self, candles_by_tf: Dict[str, List[Candle]]) -> str:
+        regime_cfg = self.config.get("daily_regime", {})
+        preferred = str(regime_cfg.get("timeframe", "")).strip()
+        if preferred and preferred in candles_by_tf:
+            return preferred
+        if "1h" in candles_by_tf:
+            return "1h"
+        if self.timeframes:
+            fallback = self.timeframes[-1]
+            if fallback in candles_by_tf:
+                return fallback
+        return next(iter(candles_by_tf.keys()), "1m")
 
     async def _compute_cycle(self) -> None:
         candles_by_tf = {tf: buffer.to_list() for tf, buffer in self.buffers.items()}
@@ -257,7 +282,8 @@ class Runner:
                 self.event_bus.publish("error", f"Indicator {indicator.name} failed", {"error": str(exc)})
 
         base_tf = self.timeframes[0]
-        market_regime = classify_regime(candles_by_tf.get(base_tf, []), self.config)
+        regime_tf = self._resolve_regime_timeframe(candles_by_tf)
+        market_regime = classify_regime(candles_by_tf.get(regime_tf, []), self.config)
         agg = aggregate(results, self.config, market_regime)
 
         self.state.last_update = now_tz(self.timezone)

@@ -52,33 +52,29 @@ class WilliamsRIndicator(IndicatorBase):
         wr_prev = float(williams_r.iloc[-2])
 
         # Threshold crossovers
-        entering_overbought = wr_prev < overbought and wr_now >= overbought
         leaving_overbought = wr_prev >= overbought and wr_now < overbought
-        entering_oversold = wr_prev > oversold and wr_now <= oversold
         leaving_oversold = wr_prev <= oversold and wr_now > oversold
 
         state = SignalState.NEUTRAL
         reason = "Williams %R neutral"
         confidence = 40.0
 
-        if wr_now <= oversold:
-            if leaving_oversold:
-                state = SignalState.BUY
-                reason = "Williams %R leaving oversold zone"
-                confidence = 80.0
-            else:
-                state = SignalState.BUY
-                reason = f"Williams %R oversold ({wr_now:.1f})"
-                confidence = 70.0
+        if leaving_oversold:
+            state = SignalState.BUY
+            reason = "Williams %R leaving oversold zone"
+            confidence = 80.0
+        elif leaving_overbought:
+            state = SignalState.SELL
+            reason = "Williams %R leaving overbought zone"
+            confidence = 80.0
+        elif wr_now <= oversold:
+            state = SignalState.BUY
+            reason = f"Williams %R oversold ({wr_now:.1f})"
+            confidence = 70.0
         elif wr_now >= overbought:
-            if leaving_overbought:
-                state = SignalState.SELL
-                reason = "Williams %R leaving overbought zone"
-                confidence = 80.0
-            else:
-                state = SignalState.SELL
-                reason = f"Williams %R overbought ({wr_now:.1f})"
-                confidence = 70.0
+            state = SignalState.SELL
+            reason = f"Williams %R overbought ({wr_now:.1f})"
+            confidence = 70.0
         elif wr_now > -50:
             state = SignalState.BUY
             reason = "Williams %R bullish territory"

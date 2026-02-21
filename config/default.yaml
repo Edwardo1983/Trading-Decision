@@ -278,6 +278,7 @@ alerts:
   min_confidence: 70
 
 daily_regime:
+  timeframe: "1h"
   min_bars: 60
   atr_period: 14
   bb_period: 20
