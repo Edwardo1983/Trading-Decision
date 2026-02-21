@@ -10,9 +10,12 @@ assets/ephemeris/*.bsp
 *.download2
 logs/
 *.csv
+prompts/
 .pytest_cache/
 .mypy_cache/
 promt/
+runner.pid
+stop.flag
 .env
 .vscode/
 .idea/
