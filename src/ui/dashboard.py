@@ -14,7 +14,15 @@ if str(SRC_DIR) not in sys.path:
 from core.utils.config_loader import load_config
 from engine.runner import Runner
 from engine.multi_runner import MultiRunner
-from ui.widgets import render_context, render_events, render_indicator_table, render_summary
+from ui.widgets import (
+    load_latest_csv_row,
+    render_context,
+    render_events,
+    render_indicator_table,
+    render_signal_layout_csv,
+    render_signal_layout_live,
+    render_summary,
+)
 
 def run_app():
     st.set_page_config(page_title="Trading Decision Dashboard", layout="wide")
@@ -54,6 +62,12 @@ def run_app():
 
         start = col4.button("Start")
         stop = col4.button("Stop")
+
+    view_mode = st.radio(
+        "View",
+        ["Signal Board (Live)", "Signal Board (CSV Logs)", "Classic Table"],
+        horizontal=True,
+    )
 
     with st.expander("Advanced Settings"):
         tcol1, tcol2, tcol3 = st.columns(3)
@@ -118,20 +132,44 @@ def run_app():
     for idx, symbol_name in enumerate(symbols_list):
         snapshot = snapshots[symbol_name]
         with tabs[idx]:
-            left, right = st.columns([3, 1])
-            with left:
-                st.subheader(f"Indicators ({symbol_name})")
-                render_indicator_table(snapshot.indicators, snapshot.market_regime)
-
-                st.subheader("Summary")
-                render_summary(snapshot.aggregate)
-
-            with right:
-                st.subheader("Context")
-                render_context(snapshot.indicators, snapshot.market_regime, snapshot.sentiment)
-
+            if view_mode == "Signal Board (CSV Logs)":
+                csv_base_path = config.get("csv", {}).get("base_path", "logs")
+                csv_base_path_path = Path(str(csv_base_path))
+                if not csv_base_path_path.is_absolute():
+                    csv_base_path = str(Path(__file__).resolve().parents[2] / csv_base_path_path)
+                csv_row, csv_file = load_latest_csv_row(csv_base_path, symbol_name)
+                if csv_row and csv_file:
+                    render_signal_layout_csv(symbol_name, csv_row, csv_file)
+                else:
+                    st.info(
+                        "No CSV data found yet for this symbol. Start the runner and wait for at least one cycle."
+                    )
                 st.subheader("Events")
                 render_events(snapshot.events)
+            elif view_mode == "Signal Board (Live)":
+                render_signal_layout_live(
+                    indicators=snapshot.indicators,
+                    aggregate=snapshot.aggregate,
+                    market_regime=snapshot.market_regime,
+                    sentiment=snapshot.sentiment,
+                )
+                st.subheader("Events")
+                render_events(snapshot.events)
+            else:
+                left, right = st.columns([3, 1])
+                with left:
+                    st.subheader(f"Indicators ({symbol_name})")
+                    render_indicator_table(snapshot.indicators, snapshot.market_regime)
+
+                    st.subheader("Summary")
+                    render_summary(snapshot.aggregate)
+
+                with right:
+                    st.subheader("Context")
+                    render_context(snapshot.indicators, snapshot.market_regime, snapshot.sentiment)
+
+                    st.subheader("Events")
+                    render_events(snapshot.events)
 
             st.caption(
                 f"Status: {snapshot.state.value} | Symbol: {snapshot.symbol} | Last update: {snapshot.last_update}"

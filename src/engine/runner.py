@@ -4,7 +4,7 @@ import asyncio
 import logging
 from pathlib import Path
 from threading import Thread
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from core.models import Candle, EngineState, IndicatorResult, MarketRegime, RunnerSnapshot
 from core.utils.config_loader import load_config
@@ -25,6 +25,11 @@ from engine.state import RunnerState
 from indicators.registry import IndicatorRegistry, load_indicators
 
 logger = logging.getLogger(__name__)
+
+try:
+    from ml.claude_analyzer import PromptGenerator
+except Exception:  # pragma: no cover - optional dependency path issues should not break runner
+    PromptGenerator = None
 
 
 class Runner:
@@ -90,6 +95,18 @@ class Runner:
             rotate_daily=bool(csv_cfg.get("rotate_daily", True)),
         )
 
+        prompt_cfg = config.get("prompt_generator", {})
+        self.prompt_generator: Optional[Any] = None
+        self.prompt_interval_minutes = int(prompt_cfg.get("interval_minutes", 60))
+        self.prompt_auto_save = bool(prompt_cfg.get("auto_save", True))
+        if bool(prompt_cfg.get("enabled", False)):
+            if PromptGenerator is None:
+                logger.warning("Prompt generator enabled, but PromptGenerator could not be imported.")
+            else:
+                output_dir = Path(str(prompt_cfg.get("output_dir", "prompts"))) / self.symbol
+                lookback = int(prompt_cfg.get("lookback_candles", 21))
+                self.prompt_generator = PromptGenerator(output_dir=str(output_dir), lookback=lookback)
+
     def start(self) -> None:
         if self._running:
             return
@@ -129,9 +146,18 @@ class Runner:
                 logger.exception("Loop error: %s", exc)
                 self.event_bus.publish("error", "Loop error", {"error": str(exc)})
                 self.state.errors.append(str(exc))
-            await asyncio.sleep(self.refresh_seconds)
+            await self._sleep_until_next_cycle(stop_flag)
 
         await self._stop_ws()
+
+    async def _sleep_until_next_cycle(self, stop_flag: Optional[Path]) -> None:
+        sleep_seconds = max(1, int(self.refresh_seconds))
+        for _ in range(sleep_seconds):
+            if not self._running:
+                break
+            if stop_flag and stop_flag.exists():
+                break
+            await asyncio.sleep(1)
 
     async def _bootstrap_buffers(self) -> None:
         await self._select_provider()
@@ -321,6 +347,56 @@ class Runner:
                 market_regime=market_regime,
                 sentiment=self.state.sentiment,
             )
+
+        self._maybe_generate_prompt(candles_by_tf, results, market_regime)
+
+    def _extract_patterns(self, indicators: List[IndicatorResult]) -> List[Dict[str, Any]]:
+        pattern_indicator = next((item for item in indicators if item.name == "pattern_detector"), None)
+        if pattern_indicator is None:
+            return []
+        value = pattern_indicator.value
+        if isinstance(value, dict):
+            patterns = value.get("patterns")
+            if isinstance(patterns, list):
+                return [item for item in patterns if isinstance(item, dict)]
+        if isinstance(value, list):
+            return [item for item in value if isinstance(item, dict)]
+        return []
+
+    def _maybe_generate_prompt(
+        self,
+        candles_by_tf: Dict[str, List[Candle]],
+        indicators: List[IndicatorResult],
+        market_regime: MarketRegime,
+    ) -> None:
+        if not self.prompt_generator:
+            return
+        if not self.prompt_generator.should_refresh(self.prompt_interval_minutes):
+            return
+        base_tf = self.timeframes[0]
+        candles = candles_by_tf.get(base_tf, [])
+        if not candles:
+            return
+        try:
+            self.prompt_generator.generate_prompt(
+                symbol=self.symbol,
+                candles=candles,
+                indicators=indicators,
+                sentiment=self.state.sentiment,
+                market_regime=market_regime,
+                day_classification=market_regime.value,
+                patterns=self._extract_patterns(indicators),
+                save_to_file=self.prompt_auto_save,
+            )
+            latest_path = self.prompt_generator.output_dir / "latest_prompt.txt"
+            self.event_bus.publish(
+                "info",
+                "Prompt generated for Claude/Codex",
+                {"path": str(latest_path)},
+            )
+        except Exception as exc:
+            logger.exception("Prompt generation failed: %s", exc)
+            self.event_bus.publish("error", "Prompt generation failed", {"error": str(exc)})
 
     def get_snapshot(self) -> RunnerSnapshot:
         return RunnerSnapshot(

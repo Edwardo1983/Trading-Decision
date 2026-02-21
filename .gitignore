@@ -6,6 +6,7 @@ __pycache__/
 *.log
 .env
 assets/ephemeris/*.bsp
+de421.bsp
 *.download
 *.download2
 logs/
@@ -25,3 +26,4 @@ build/
 Thumbs.db
 .DS_Store
 tester/
+LOCAL_BEGINNER_COMMANDS.md

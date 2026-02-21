@@ -1,24 +1,356 @@
 from __future__ import annotations
 
-from typing import List
+import csv
+import json
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
+
 import pandas as pd
 import streamlit as st
 
-from typing import Optional
-
 from core.models import AggregateResult, IndicatorResult, MarketRegime
+
+CATEGORY_ORDER = ["trend", "momentum", "volume", "volatility", "structure", "context", "sentiment", "other"]
+CATEGORY_LABELS = {
+    "trend": "Trend Indicators",
+    "momentum": "Momentum Indicators",
+    "volume": "Volume Indicators",
+    "volatility": "Volatility Indicators",
+    "structure": "Structure Indicators",
+    "context": "Context Indicators",
+    "sentiment": "Sentiment",
+    "other": "Other Indicators",
+}
+INDICATOR_CATEGORY_MAP = {
+    "candle_efficiency": "price_action",
+    "prev_candle_break": "price_action",
+    "pattern_detector": "price_action",
+    "ema_bias": "trend",
+    "market_structure": "trend",
+    "adx": "trend",
+    "supertrend": "trend",
+    "sma": "trend",
+    "vwma": "trend",
+    "ichimoku": "trend",
+    "parabolic_sar": "trend",
+    "rsi_state": "momentum",
+    "macd": "momentum",
+    "divergence_detector": "momentum",
+    "stochastic_rsi": "momentum",
+    "roc_impulse": "momentum",
+    "cci": "momentum",
+    "williams_r": "momentum",
+    "cvd": "volume",
+    "vwap_bias": "volume",
+    "obv_flow": "volume",
+    "mfi": "volume",
+    "cmf": "volume",
+    "volume_profile": "volume",
+    "volume_oscillator": "volume",
+    "atr_regime": "volatility",
+    "bb_squeeze_expand": "volatility",
+    "keltner_channels": "volatility",
+    "donchian_channels": "volatility",
+    "smart_money": "structure",
+    "pivot_points": "structure",
+    "fibonacci": "structure",
+    "support_resistance": "structure",
+    "liquidity_zones": "structure",
+    "sentiment": "context",
+    "htf_conflict": "context",
+    "levels_daily_weekly": "context",
+    "darvas_box": "context",
+    "astro_calendar": "context",
+}
+SENTIMENT_FIELDS = [
+    "funding_rate",
+    "open_interest",
+    "long_short_ratio",
+    "fear_greed",
+    "buy_sell_ratio",
+    "taker_buy_pct",
+    "trade_buy_volume",
+    "trade_sell_volume",
+    "price_change_pct",
+]
+
+
+def _normalize_signal(raw: object) -> str:
+    text = str(raw or "").strip().upper()
+    aliases = {
+        "BULLISH": "BUY",
+        "LONG": "BUY",
+        "STRONG_BUY": "BUY",
+        "BEARISH": "SELL",
+        "SHORT": "SELL",
+        "STRONG_SELL": "SELL",
+        "NO_TRADE": "NO_TRADE",
+        "WAIT": "WAIT",
+    }
+    if text in {"BUY", "SELL", "NEUTRAL", "NO_TRADE", "WAIT"}:
+        return text
+    return aliases.get(text, "NEUTRAL")
+
+
+def _signal_label(signal: str) -> str:
+    normalized = _normalize_signal(signal)
+    if normalized == "BUY":
+        return "BUY"
+    if normalized == "SELL":
+        return "SELL"
+    if normalized == "NO_TRADE":
+        return "NO_TRADE"
+    if normalized == "WAIT":
+        return "WAIT"
+    return "NEUTRAL"
+
+
+def _safe_float(value: object, default: float = 0.0) -> float:
+    try:
+        if value in (None, ""):
+            return default
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _format_indicator_value(value: object, max_items: int = 4) -> str:
+    if isinstance(value, dict):
+        preview = []
+        for key, item in list(value.items())[:max_items]:
+            preview.append(f"{key}={item}")
+        return ", ".join(preview)
+    if isinstance(value, list):
+        sample = ", ".join(str(item) for item in value[:max_items])
+        if len(value) > max_items:
+            sample += ", ..."
+        return sample
+    return str(value)
+
+
+def _category_for_indicator(name: str, fallback: str = "other") -> str:
+    category = str(INDICATOR_CATEGORY_MAP.get(name, fallback)).lower()
+    if category == "price_action":
+        return "structure"
+    if category not in CATEGORY_ORDER:
+        return "other"
+    return category
+
+
+def _extract_signal_from_payload(payload: object) -> str:
+    if not isinstance(payload, dict):
+        return "NEUTRAL"
+    for key in ("state", "signal", "recommendation", "trend"):
+        if key in payload:
+            return _normalize_signal(payload.get(key))
+    return "NEUTRAL"
+
+
+def load_latest_csv_row(logs_path: str | Path, symbol: str) -> Tuple[Optional[Dict[str, str]], Optional[Path]]:
+    directory = Path(logs_path)
+    if not directory.exists():
+        return None, None
+    normalized_symbol = "".join(ch for ch in symbol.upper() if ch.isalnum())
+    candidates = sorted(directory.glob(f"*_{normalized_symbol}.csv"))
+    if not candidates:
+        return None, None
+    latest_file = max(candidates, key=lambda path: path.stat().st_mtime)
+    last_row: Optional[Dict[str, str]] = None
+    with latest_file.open("r", encoding="utf-8", newline="") as handle:
+        reader = csv.DictReader(handle)
+        for row in reader:
+            last_row = row
+    return last_row, latest_file
+
+
+def _rows_from_live(indicators: List[IndicatorResult], sentiment: Optional[dict] = None) -> List[Dict[str, object]]:
+    rows: List[Dict[str, object]] = []
+    for ind in indicators:
+        category = str(ind.category or _category_for_indicator(ind.name)).lower()
+        if category == "price_action":
+            category = "structure"
+        if category not in CATEGORY_ORDER:
+            category = _category_for_indicator(ind.name)
+        rows.append(
+            {
+                "category": category,
+                "indicator": ind.name,
+                "signal": _normalize_signal(ind.state.value),
+                "confidence": round(float(ind.confidence), 2),
+                "value": _format_indicator_value(ind.value),
+                "condition": ind.reason or "-",
+            }
+        )
+    if sentiment:
+        for key in SENTIMENT_FIELDS:
+            if sentiment.get(key) is None:
+                continue
+            rows.append(
+                {
+                    "category": "sentiment",
+                    "indicator": key,
+                    "signal": "NEUTRAL",
+                    "confidence": 0.0,
+                    "value": sentiment.get(key),
+                    "condition": "sentiment feed",
+                }
+            )
+    return rows
+
+
+def _rows_from_csv(csv_row: Dict[str, str]) -> List[Dict[str, object]]:
+    rows: List[Dict[str, object]] = []
+    for key, raw_value in csv_row.items():
+        if not key.startswith("ind_"):
+            continue
+        name = key[4:]
+        parsed_value: object = raw_value
+        if isinstance(raw_value, str) and raw_value.strip().startswith(("{", "[")):
+            try:
+                parsed_value = json.loads(raw_value)
+            except Exception:
+                parsed_value = raw_value
+        signal = _normalize_signal(csv_row.get(f"sig_{name}") or _extract_signal_from_payload(parsed_value))
+        confidence = _safe_float(csv_row.get(f"conf_{name}"), default=0.0)
+        if confidence == 0.0 and isinstance(parsed_value, dict):
+            confidence = _safe_float(parsed_value.get("confidence"), default=0.0)
+        condition = csv_row.get(f"reason_{name}") or "-"
+        if condition == "-" and isinstance(parsed_value, dict):
+            condition = str(parsed_value.get("reason") or "-")
+        rows.append(
+            {
+                "category": _category_for_indicator(name),
+                "indicator": name,
+                "signal": signal,
+                "confidence": round(confidence, 2),
+                "value": _format_indicator_value(parsed_value),
+                "condition": condition,
+            }
+        )
+    for key in SENTIMENT_FIELDS:
+        value = csv_row.get(key)
+        if value in (None, ""):
+            continue
+        rows.append(
+            {
+                "category": "sentiment",
+                "indicator": key,
+                "signal": "NEUTRAL",
+                "confidence": 0.0,
+                "value": value,
+                "condition": "csv sentiment",
+            }
+        )
+    return rows
+
+
+def _render_grouped_signal_tables(rows: List[Dict[str, object]]) -> None:
+    if not rows:
+        st.info("No signal data available.")
+        return
+    for category in CATEGORY_ORDER:
+        category_rows = [row for row in rows if row.get("category") == category]
+        if not category_rows:
+            continue
+        table = pd.DataFrame(
+            [
+                {
+                    "Indicator": row["indicator"],
+                    "Signal": _signal_label(str(row["signal"])),
+                    "Confidence %": row["confidence"],
+                    "Value": row["value"],
+                    "Condition": row["condition"],
+                }
+                for row in category_rows
+            ]
+        )
+        st.markdown(f"#### {CATEGORY_LABELS.get(category, category.title())}")
+        st.dataframe(table, use_container_width=True, hide_index=True)
+
+
+def _render_signal_summary(
+    rows: List[Dict[str, object]],
+    aggregate: AggregateResult | Dict[str, object] | None,
+    market_regime: MarketRegime | str,
+) -> None:
+    total = len(rows)
+    if total <= 0:
+        st.info("No signal summary available.")
+        return
+    buy_count = sum(1 for row in rows if _normalize_signal(row.get("signal")) == "BUY")
+    sell_count = sum(1 for row in rows if _normalize_signal(row.get("signal")) == "SELL")
+    neutral_count = sum(
+        1 for row in rows if _normalize_signal(row.get("signal")) in {"NEUTRAL", "WAIT", "NO_TRADE"}
+    )
+
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Bullish Signals", f"{buy_count}/{total}", f"{(buy_count / total) * 100:.1f}%")
+    col2.metric("Bearish Signals", f"{sell_count}/{total}", f"{(sell_count / total) * 100:.1f}%")
+    col3.metric("Neutral Signals", f"{neutral_count}/{total}", f"{(neutral_count / total) * 100:.1f}%")
+
+    regime_text = market_regime.value if hasattr(market_regime, "value") else str(market_regime)
+    st.markdown(f"**Market Regime:** {regime_text}")
+
+    if isinstance(aggregate, AggregateResult):
+        st.markdown(f"**Final State:** {aggregate.final_state.value}")
+        st.markdown(
+            f"**Scores:** buy={aggregate.buy_pct:.1f}% | sell={aggregate.sell_pct:.1f}% | no_trade={aggregate.no_trade_pct:.1f}%"
+        )
+        st.markdown(f"**Recommendation:** {aggregate.recommendation}")
+        if aggregate.reason:
+            st.markdown(f"**Reason:** {aggregate.reason}")
+        return
+
+    if isinstance(aggregate, dict):
+        final_state = _normalize_signal(aggregate.get("final_state"))
+        buy_score = _safe_float(aggregate.get("buy_score"), 0.0)
+        sell_score = _safe_float(aggregate.get("sell_score"), 0.0)
+        no_trade_score = _safe_float(aggregate.get("no_trade_score"), 0.0)
+        st.markdown(f"**Final State:** {final_state}")
+        st.markdown(
+            f"**Scores:** buy={buy_score:.1f}% | sell={sell_score:.1f}% | no_trade={no_trade_score:.1f}%"
+        )
+
+
+def render_signal_layout_live(
+    indicators: List[IndicatorResult],
+    aggregate: Optional[AggregateResult],
+    market_regime: MarketRegime,
+    sentiment: Optional[dict] = None,
+) -> None:
+    rows = _rows_from_live(indicators, sentiment=sentiment)
+    _render_grouped_signal_tables(rows)
+    _render_signal_summary(rows, aggregate, market_regime)
+
+
+def render_signal_layout_csv(symbol: str, csv_row: Dict[str, str], source_file: Path) -> None:
+    rows = _rows_from_csv(csv_row)
+    aggregate = {
+        "buy_score": csv_row.get("buy_score"),
+        "sell_score": csv_row.get("sell_score"),
+        "no_trade_score": csv_row.get("no_trade_score"),
+        "final_state": csv_row.get("final_state"),
+    }
+    st.caption(f"CSV source: {source_file.name} | Symbol: {symbol} | Timestamp: {csv_row.get('timestamp', '-')}")
+    _render_grouped_signal_tables(rows)
+    _render_signal_summary(rows, aggregate, csv_row.get("market_regime", "UNKNOWN"))
 
 
 def render_indicator_table(indicators: List[IndicatorResult], market_regime: MarketRegime) -> None:
     astro = next((i for i in indicators if i.name == "astro_calendar"), None)
     darvas = next((i for i in indicators if i.name == "darvas_box"), None)
-    smart = next((i for i in indicators if i.name == "smart_money"), None)
     astro_tag = ""
     darvas_tag = ""
     if astro and isinstance(astro.value, dict):
-        astro_tag = f"{astro.value.get('label')} new={astro.value.get('is_new_window')} full={astro.value.get('is_full_window')}"
+        astro_tag = (
+            f"{astro.value.get('label')} new={astro.value.get('is_new_window')} "
+            f"full={astro.value.get('is_full_window')}"
+        )
     if darvas and isinstance(darvas.value, dict):
-        darvas_tag = f"top={darvas.value.get('box_top')} bottom={darvas.value.get('box_bottom')} in={darvas.value.get('in_box')}"
+        darvas_tag = (
+            f"top={darvas.value.get('box_top')} bottom={darvas.value.get('box_bottom')} "
+            f"in={darvas.value.get('in_box')}"
+        )
     rows = []
     for ind in indicators:
         value = ind.value

@@ -11,9 +11,10 @@ Sistem de suport decizional pentru trading crypto (BTC/altcoins). Agrega indicat
 - Market regime zilnic (AGGRESSIVE / MODERATE / CHILL)
 - Smart Money (Order Blocks + FVG + Sweeps + BOS/CHoCH)
 - Sentiment: futures (funding/OI/long-short) + spot (buy/sell ratio proxy)
-- UI Streamlit cu Start/Stop, tabel, sumar, evenimente
-- CSV logging la minut, rotatie zilnica
+- UI Streamlit cu Start/Stop, Signal Board (live + CSV), tabel clasic, sumar, evenimente
+- CSV logging la minut, rotatie zilnica, plus stari/conditii per indicator (`sig_*`, `conf_*`, `reason_*`)
 - ML placeholder (lookback 21 candles)
+- Generator prompt automat pentru Claude/Codex (fisier text in `prompts/<SYMBOL>/`)
 - Astro calendar experimental (Moon phases + aspects)
 
 ## Cerinte
@@ -74,6 +75,14 @@ python -m app status
 python -m app validate-config
 ```
 Comenzile se ruleaza din folderul `main/`.
+`start` ruleaza continuu; `stop` se da dintr-un al doilea terminal (nu doar `Ctrl+C`).
+
+## Prompt pentru Claude/Codex
+- Config: `prompt_generator` in `config/default.yaml`
+- Prompt generat automat in loop (prima generatie imediat, apoi la `interval_minutes`)
+- Locatie implicita: `prompts/<SYMBOL>/latest_prompt.txt`
+- Arhiva: `prompts/<SYMBOL>/archive/prompt_<SYMBOL>_YYYYMMDD_HHMM.txt`
+- Raspunsul AI (daca este parsat manual) se salveaza in `prompts/<SYMBOL>/latest_analysis.json`
 
 ## Configurare
 - Fisier principal: `config/default.yaml`
@@ -92,6 +101,7 @@ Sectiuni cheie:
 - Sentiment futures functioneaza doar cu `market_type: futures`
 - Pentru spot folosim proxy buy/sell ratio din 24h ticker + optional recent trades
 - MEXC WS actualizeaza candle-ul curent in timp real (fara flag explicit de inchidere)
+- In UI, modul `Signal Board (CSV Logs)` afiseaza ultimul rand din CSV pe simbol
 - Astro este experimental (nu predictor validat)
 
 ## Teste
@@ -114,9 +124,10 @@ Decision-support system for crypto trading (BTC/altcoins). Aggregates technical 
 - Daily market regime (AGGRESSIVE / MODERATE / CHILL)
 - Smart Money (Order Blocks + FVG + Sweeps + BOS/CHoCH)
 - Sentiment: futures (funding/OI/long-short) + spot (buy/sell proxy)
-- Streamlit UI with Start/Stop, table, summary, events
-- Minute CSV logging with daily rotation
+- Streamlit UI with Start/Stop, Signal Board (live + CSV), classic table, summary, events
+- Minute CSV logging with daily rotation, plus per-indicator state/condition (`sig_*`, `conf_*`, `reason_*`)
 - ML placeholder (21-candle lookback)
+- Automatic Claude/Codex prompt generator (`prompts/<SYMBOL>/`)
 - Experimental astro calendar (Moon phases + aspects)
 
 ## Requirements
@@ -177,6 +188,14 @@ python -m app status
 python -m app validate-config
 ```
 Run CLI commands from the `main/` folder.
+`start` runs continuously; use `stop` from a second terminal (not only `Ctrl+C`).
+
+## Claude/Codex Prompt
+- Config block: `prompt_generator` in `config/default.yaml`
+- Prompt is auto-generated in the runner loop (first generation immediately, then every `interval_minutes`)
+- Default path: `prompts/<SYMBOL>/latest_prompt.txt`
+- Archive path: `prompts/<SYMBOL>/archive/prompt_<SYMBOL>_YYYYMMDD_HHMM.txt`
+- Parsed AI output (manual paste flow) is saved to `prompts/<SYMBOL>/latest_analysis.json`
 
 ## Configuration
 - Main file: `config/default.yaml`
@@ -195,6 +214,7 @@ Key sections:
 - Futures sentiment works only with `market_type: futures`
 - Spot uses buy/sell proxy from 24h ticker + optional recent trades
 - MEXC WS updates the current candle in real time (no explicit close flag)
+- In UI, `Signal Board (CSV Logs)` displays the latest CSV row per symbol
 - Astro is experimental (not a validated predictor)
 
 ## Tests
