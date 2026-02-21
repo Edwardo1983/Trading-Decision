@@ -309,11 +309,12 @@ def _render_csv_panel(panel_key: str, panel_name: str, symbol: str, timeframe: s
         st.info("Nu exista fisiere CSV pentru simbolul selectat.")
         return "-"
 
+    key_suffix = f"{panel_key}_{symbol}_{timeframe}".lower()
     file_path = st.selectbox(
         f"{panel_name} CSV File",
         options=files,
         format_func=lambda p: p.name,
-        key=f"{panel_key}_csv_file",
+        key=f"{key_suffix}_csv_file",
     )
     try:
         df = pd.read_csv(file_path, dtype=str)
@@ -339,7 +340,7 @@ def _render_csv_panel(panel_key: str, panel_name: str, symbol: str, timeframe: s
         min_value=0,
         max_value=max_idx,
         value=max_idx,
-        key=f"{panel_key}_csv_row",
+        key=f"{key_suffix}_csv_row",
     )
     row = _to_string_row(active_df.iloc[row_pos])
     render_signal_layout_csv(symbol, row, file_path)

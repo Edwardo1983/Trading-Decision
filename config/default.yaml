@@ -36,6 +36,8 @@ time_sync:
   timeout_seconds: 1.5
   sync_interval_seconds: 600
   max_offset_seconds: 3.0
+  align_runner_to_clock: true
+  run_second_offset: -1.2
 
 thresholds:
   alignment: 75

@@ -574,9 +574,17 @@ def render_signal_layout_csv(symbol: str, csv_row: Dict[str, str], source_file: 
         "ml_confidence": csv_row.get("ml_confidence"),
         "ml_probability_up": csv_row.get("ml_probability_up"),
     }
-    st.caption(
-        f"CSV source: {source_file.name} | Symbol: {symbol} | Timestamp: {csv_row.get('timestamp', '-') }"
-    )
+    captured_at = csv_row.get("captured_at")
+    lag = csv_row.get("capture_lag_sec")
+    if captured_at:
+        st.caption(
+            f"CSV source: {source_file.name} | Symbol: {symbol} | "
+            f"Timestamp: {csv_row.get('timestamp', '-')} | Captured: {captured_at} | Lag: {lag or '-'}s"
+        )
+    else:
+        st.caption(
+            f"CSV source: {source_file.name} | Symbol: {symbol} | Timestamp: {csv_row.get('timestamp', '-') }"
+        )
     _render_grouped_signal_tables(rows)
     _render_signal_summary(
         rows,

@@ -116,7 +116,9 @@ Sectiuni cheie:
 - In UI, butoanele `START/STOP` lanseaza/opresc engine-ul CLI (`python -m app start/stop`)
 - In UI, modul `Signal Board (Live)` afiseaza ultima stare live din CSV-ul curent
 - In UI, modul `Signal Board (CSV Logs)` permite selectie fisier + rand CSV
-- Timestamp CSV este sincronizat NTP (cu fallback la ceasul local) si aliniat la minut (`ss=00`)
+- Timestamp CSV este sincronizat NTP (cu fallback la ceasul local), iar runner-ul este aliniat la ceas (`time_sync.align_runner_to_clock`)
+- CSV include `captured_at` (timp real de colectare) si `capture_lag_sec` pentru audit
+- Pentru sincronizare stricta la minut, `time_sync.run_second_offset` poate fi negativ (ex: `-2.0`) ca prefetch-ul sa incheie aproape de fix
 - Astro este context experimental (implicit NEUTRAL; optional bias directional din config)
 - Darvas foloseste confirmare explicita (`confirmation_bars`) + suport volum/volatilitate
 - Astro este experimental (nu predictor validat)
@@ -246,7 +248,9 @@ Key sections:
 - In UI, `START/STOP` controls launch/stop the CLI engine (`python -m app start/stop`)
 - In UI, `Signal Board (Live)` shows the latest live state from the active CSV
 - In UI, `Signal Board (CSV Logs)` allows selecting file and row from CSV logs
-- CSV timestamp is NTP-synced (fallback to local device clock) and minute-aligned (`ss=00`)
+- CSV timestamp is NTP-synced (fallback to local device clock), and the runner is clock-aligned (`time_sync.align_runner_to_clock`)
+- CSV includes `captured_at` (real capture time) and `capture_lag_sec` for auditing
+- For strict minute sync, `time_sync.run_second_offset` can be negative (e.g. `-2.0`) so prefetch finishes near minute close
 - Astro is experimental context (default NEUTRAL; optional directional bias in config)
 - Darvas uses explicit breakout confirmation (`confirmation_bars`) with volume/volatility support
 - Astro is experimental (not a validated predictor)

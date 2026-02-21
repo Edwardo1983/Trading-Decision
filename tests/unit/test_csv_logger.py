@@ -195,3 +195,45 @@ def test_csv_logger_uses_candle_timestamp_aligned_to_minute(tmp_path):
         reader = csv.DictReader(handle)
         first = next(reader)
     assert first["timestamp"] == "2025-01-01T12:34:00+00:00"
+
+
+def test_csv_logger_capture_lag_uses_candle_close_time(tmp_path, monkeypatch):
+    fixed_time = datetime(2025, 1, 1, 12, 35, 2, tzinfo=timezone.utc)
+
+    def fake_now_tz(_timezone: str):
+        return fixed_time
+
+    monkeypatch.setattr("data.export.csv_logger.now_tz", fake_now_tz)
+    logger = CSVMinuteLogger(base_path=str(tmp_path), timezone="UTC", rotate_daily=True)
+    indicators = [
+        IndicatorResult(
+            name="ema_bias",
+            category="trend",
+            timeframe="1m",
+            value={"fast": 2, "slow": 1},
+            state=SignalState.BUY,
+            confidence=77.0,
+            reason="cross up",
+            weight=1.0,
+        )
+    ]
+
+    logger.log(
+        symbol="BTCUSDT",
+        timeframe="1m",
+        ohlcv={"open": 1, "high": 2, "low": 0.5, "close": 1.5, "volume": 10},
+        indicators=indicators,
+        aggregate=None,
+        include_indicators=["ema_bias"],
+        market_regime=MarketRegime.UNKNOWN,
+        sentiment=None,
+        candle_timestamp=datetime(2025, 1, 1, 12, 34, 0, tzinfo=timezone.utc),
+        candle_close_time=datetime(2025, 1, 1, 12, 34, 59, tzinfo=timezone.utc),
+    )
+
+    csv_path = tmp_path / "2025-01-01_BTCUSDT.csv"
+    with csv_path.open(newline="", encoding="utf-8") as handle:
+        reader = csv.DictReader(handle)
+        first = next(reader)
+    assert first["captured_at"] == "2025-01-01T12:35:02+00:00"
+    assert float(first["capture_lag_sec"]) == 3.0

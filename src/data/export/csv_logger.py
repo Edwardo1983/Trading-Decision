@@ -66,6 +66,8 @@ class CSVMinuteLogger:
     def _headers(self, indicators: Iterable[str]) -> List[str]:
         base = [
             "timestamp",
+            "captured_at",
+            "capture_lag_sec",
             "symbol",
             "timeframe",
             "open",
@@ -143,12 +145,24 @@ class CSVMinuteLogger:
         sentiment: Optional[Dict[str, float]] = None,
         ml_result: Optional[Dict[str, object]] = None,
         candle_timestamp: Optional[datetime] = None,
+        candle_close_time: Optional[datetime] = None,
     ) -> None:
         include_set = set(include_indicators)
         row_time = self._resolve_row_timestamp(candle_timestamp)
+        captured_at = self._now()
+        lag_seconds = 0.0
+        lag_anchor = candle_close_time or candle_timestamp
+        if lag_anchor is not None:
+            try:
+                candle_local = to_tz(lag_anchor, self.timezone)
+                lag_seconds = max(0.0, (captured_at - candle_local).total_seconds())
+            except Exception:
+                lag_seconds = 0.0
         file_path = self._ensure_file(symbol, row_time=row_time)
         row = {
             "timestamp": row_time.isoformat(),
+            "captured_at": captured_at.isoformat(),
+            "capture_lag_sec": round(lag_seconds, 3),
             "symbol": symbol,
             "timeframe": timeframe,
             "open": ohlcv.get("open"),

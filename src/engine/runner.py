@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import timedelta
 from pathlib import Path
 from threading import Thread
 from typing import Any, Dict, List, Optional
@@ -12,6 +13,7 @@ from core.utils.config_loader import load_config
 from core.utils.paths import project_root
 from core.utils.ring_buffer import RingBuffer
 from core.utils.sound_alert import play_sound
+from core.timeframes import to_seconds
 from data.binance.mapper import ws_to_candle as binance_ws_to_candle
 from data.binance.ws import BinanceWSClient
 from data.mexc.mapper import ws_to_candle as mexc_ws_to_candle
@@ -50,6 +52,9 @@ class Runner:
         self.timezone = app.get("timezone", "UTC")
         self.clock_sync = ClockSync.from_config(config.get("time_sync", {}))
         self.clock_sync.sync_if_due()
+        self._aligned_schedule = bool(config.get("time_sync", {}).get("align_runner_to_clock", True))
+        self._run_second_offset = float(config.get("time_sync", {}).get("run_second_offset", -1.2))
+        self._last_logged_candle_ts = None
 
         data = config.get("data", {})
         self.rest_limit = int(data.get("rest_limit", 200))
@@ -57,6 +62,7 @@ class Runner:
         self.buffers: Dict[str, RingBuffer[Candle]] = {
             tf: RingBuffer(self.buffer_size) for tf in self.timeframes
         }
+        self._tf_next_fetch: Dict[str, float] = {tf: 0.0 for tf in self.timeframes}
 
         self._ws_client: Optional[object] = None
         self._ws_task: Optional[asyncio.Task] = None
@@ -161,6 +167,8 @@ class Runner:
     async def _run_loop(self, stop_flag: Optional[Path]) -> None:
         await self._bootstrap_buffers()
         await self._start_ws()
+        if self._aligned_schedule:
+            await self._sleep_until_next_cycle(stop_flag)
 
         while self._running:
             if stop_flag and stop_flag.exists():
@@ -179,12 +187,32 @@ class Runner:
 
     async def _sleep_until_next_cycle(self, stop_flag: Optional[Path]) -> None:
         sleep_seconds = max(1, int(self.refresh_seconds))
-        for _ in range(sleep_seconds):
+        if not self._aligned_schedule:
+            for _ in range(sleep_seconds):
+                if not self._running:
+                    break
+                if stop_flag and stop_flag.exists():
+                    break
+                await asyncio.sleep(1)
+            return
+
+        now_utc = self.clock_sync.now_utc()
+        now_epoch = now_utc.timestamp()
+        base_tick = (int(now_epoch) // sleep_seconds + 1) * sleep_seconds
+        offset = self._run_second_offset if sleep_seconds >= 60 else 0.0
+        target_epoch = base_tick + offset
+        if target_epoch <= now_epoch:
+            target_epoch += sleep_seconds
+        remaining = max(0.0, target_epoch - now_epoch)
+
+        while remaining > 0:
             if not self._running:
                 break
             if stop_flag and stop_flag.exists():
                 break
-            await asyncio.sleep(1)
+            step = min(1.0, remaining)
+            await asyncio.sleep(step)
+            remaining -= step
 
     async def _bootstrap_buffers(self) -> None:
         await self._select_provider()
@@ -221,12 +249,19 @@ class Runner:
             )
 
     async def _update_from_rest(self, initial: bool = False) -> None:
-        tasks = []
+        due_timeframes: List[str] = []
+        now_epoch = self.clock_sync.now_utc().timestamp()
         for tf in self.timeframes:
-            tasks.append(self.provider.get_candles(self.symbol, tf, limit=self.rest_limit))
+            if initial or now_epoch >= self._tf_next_fetch.get(tf, 0.0):
+                due_timeframes.append(tf)
+
+        if not due_timeframes:
+            return
+
+        tasks = [self.provider.get_candles(self.symbol, tf, limit=self.rest_limit) for tf in due_timeframes]
         results = await asyncio.gather(*tasks)
 
-        for tf, candles in zip(self.timeframes, results):
+        for tf, candles in zip(due_timeframes, results):
             buffer = self.buffers[tf]
             if initial:
                 buffer.extend(candles)
@@ -236,6 +271,12 @@ class Runner:
                 for c in candles:
                     if last_ts is None or c.timestamp > last_ts:
                         buffer.append(c)
+            try:
+                tf_period = max(1, to_seconds(tf))
+            except Exception:
+                tf_period = max(1, int(self.refresh_seconds))
+            interval = max(int(self.refresh_seconds), tf_period)
+            self._tf_next_fetch[tf] = now_epoch + max(1, interval)
 
     async def _start_ws(self) -> None:
         app = self.config.get("app", {})
@@ -317,6 +358,23 @@ class Runner:
                 return fallback
         return next(iter(candles_by_tf.keys()), "1m")
 
+    def _select_latest_closed_candle(self, timeframe: str, candles: List[Candle]) -> Optional[Candle]:
+        if not candles:
+            return None
+        now_utc = self.clock_sync.now_utc()
+        try:
+            tf_seconds = to_seconds(timeframe)
+        except Exception:
+            tf_seconds = 60
+        close_grace = timedelta(0)
+        for candle in reversed(candles):
+            close_time = candle.close_time
+            if close_time is None:
+                close_time = candle.timestamp + timedelta(seconds=tf_seconds)
+            if close_time <= (now_utc + close_grace):
+                return candle
+        return candles[-1]
+
     async def _compute_cycle(self) -> None:
         candles_by_tf = {tf: buffer.to_list() for tf, buffer in self.buffers.items()}
         results: List[IndicatorResult] = []
@@ -356,9 +414,12 @@ class Runner:
                 play_sound(alerts.get("sound_file", ""))
 
         last_candle_timestamp = None
+        last_candle_close_time = None
         if candles_by_tf.get(base_tf):
-            last = candles_by_tf[base_tf][-1]
+            selected = self._select_latest_closed_candle(base_tf, candles_by_tf[base_tf])
+            last = selected or candles_by_tf[base_tf][-1]
             last_candle_timestamp = last.timestamp
+            last_candle_close_time = last.close_time
             self.state.last_ohlcv = {
                 "open": last.open,
                 "high": last.high,
@@ -370,18 +431,24 @@ class Runner:
         # CSV logging
         csv_cfg = self.config.get("csv", {})
         if csv_cfg.get("enabled", True) and candles_by_tf.get(base_tf):
-            self.csv_logger.log(
-                symbol=self.symbol,
-                timeframe=base_tf,
-                ohlcv=self.state.last_ohlcv,
-                indicators=results,
-                aggregate=agg,
-                include_indicators=csv_cfg.get("include_indicators", []),
-                market_regime=market_regime,
-                sentiment=self.state.sentiment,
-                ml_result=self.state.ml_result,
-                candle_timestamp=last_candle_timestamp,
+            should_log = not (
+                last_candle_timestamp is not None and self._last_logged_candle_ts == last_candle_timestamp
             )
+            if should_log:
+                self.csv_logger.log(
+                    symbol=self.symbol,
+                    timeframe=base_tf,
+                    ohlcv=self.state.last_ohlcv,
+                    indicators=results,
+                    aggregate=agg,
+                    include_indicators=csv_cfg.get("include_indicators", []),
+                    market_regime=market_regime,
+                    sentiment=self.state.sentiment,
+                    ml_result=self.state.ml_result,
+                    candle_timestamp=last_candle_timestamp,
+                    candle_close_time=last_candle_close_time,
+                )
+                self._last_logged_candle_ts = last_candle_timestamp
 
         self._maybe_generate_prompt(candles_by_tf, results, market_regime)
 
