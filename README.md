@@ -12,9 +12,11 @@ Sistem de suport decizional pentru trading crypto (BTC/altcoins). Agrega indicat
 - Smart Money (Order Blocks + FVG + Sweeps + BOS/CHoCH)
 - Sentiment: futures (funding/OI/long-short) + spot (buy/sell ratio proxy)
 - UI Streamlit summary-grid: 2 paritati simultan x 4 ferestre timeframe, cu Start/Stop si mod Short/Long
+- Summary card cu setup estimat: Entry / Stop Loss / Take Profit / R:R + status ML
 - CSV logging la minut, rotatie zilnica, plus stari/conditii per indicator (`sig_*`, `conf_*`, `reason_*`)
 - ML advisory real (logistic regression) + calibrare praguri + backtesting walk-forward
 - Generator prompt automat pentru Claude/Codex (fisier text in `prompts/<SYMBOL>/`)
+- Copilot local: recomandari structurate salvate in JSON (`prompts/<SYMBOL>/latest_copilot_advice.json`)
 - Astro calendar experimental (Moon phases + aspects)
 
 ## Cerinte
@@ -88,6 +90,9 @@ python scripts/train_model.py --symbol BTCUSDT
 python scripts/backtest.py --symbol BTCUSDT
 python scripts/backtest.py --symbol BTCUSDT --walk-forward --window-size 800 --step-size 100
 ```
+Dupa training:
+- seteaza `ml.enabled: true` in `config/default.yaml`
+- verifica existenta modelului: `assets/models/ml_signal_model.npz`
 
 ## Prompt pentru Claude/Codex
 - Config: `prompt_generator` in `config/default.yaml`
@@ -95,6 +100,13 @@ python scripts/backtest.py --symbol BTCUSDT --walk-forward --window-size 800 --s
 - Locatie implicita: `prompts/<SYMBOL>/latest_prompt_claude.txt`, `prompts/<SYMBOL>/latest_prompt_codex.txt` (+ `latest_prompt.txt`)
 - Arhiva: `prompts/<SYMBOL>/archive/prompt_<TARGET>_<SYMBOL>_YYYYMMDD_HHMM.txt`
 - Raspunsul AI (daca este parsat manual) se salveaza in `prompts/<SYMBOL>/latest_analysis.json`
+
+## Copilot local (fara API extern)
+- Config: `copilot` in `config/default.yaml`
+- Runner-ul genereaza recomandari locale pe fiecare timeframe din summary
+- Fisiere: `prompts/<SYMBOL>/latest_copilot_advice.json` si `latest_copilot_advice_<TF>.json`
+- Arhiva: `prompts/<SYMBOL>/archive/copilot_<SYMBOL>_YYYYMMDD_HHMM.json`
+- Recomandarea combina scorul agregat + ML + ATR + support/resistance pentru `action`, `entry`, `stop_loss`, `take_profit`, `risk_reward`
 
 ## Configurare
 - Fisier principal: `config/default.yaml`
@@ -147,9 +159,11 @@ Decision-support system for crypto trading (BTC/altcoins). Aggregates technical 
 - Smart Money (Order Blocks + FVG + Sweeps + BOS/CHoCH)
 - Sentiment: futures (funding/OI/long-short) + spot (buy/sell proxy)
 - Streamlit summary-grid UI: 2 simultaneous pairs x 4 timeframe windows, with Start/Stop and Short/Long mode
+- Summary cards include estimated setup: Entry / Stop Loss / Take Profit / R:R + ML status
 - Minute CSV logging with daily rotation, plus per-indicator state/condition (`sig_*`, `conf_*`, `reason_*`)
 - Real ML advisory (logistic regression) + threshold calibration + walk-forward backtesting
 - Automatic Claude/Codex prompt generator (`prompts/<SYMBOL>/`)
+- Local copilot: structured recommendations saved to JSON (`prompts/<SYMBOL>/latest_copilot_advice.json`)
 - Experimental astro calendar (Moon phases + aspects)
 
 ## Requirements
@@ -223,6 +237,9 @@ python scripts/train_model.py --symbol BTCUSDT
 python scripts/backtest.py --symbol BTCUSDT
 python scripts/backtest.py --symbol BTCUSDT --walk-forward --window-size 800 --step-size 100
 ```
+After training:
+- set `ml.enabled: true` in `config/default.yaml`
+- ensure the model exists at `assets/models/ml_signal_model.npz`
 
 ## Claude/Codex Prompt
 - Config block: `prompt_generator` in `config/default.yaml`
@@ -230,6 +247,13 @@ python scripts/backtest.py --symbol BTCUSDT --walk-forward --window-size 800 --s
 - Default paths: `prompts/<SYMBOL>/latest_prompt_claude.txt`, `prompts/<SYMBOL>/latest_prompt_codex.txt` (+ `latest_prompt.txt`)
 - Archive path: `prompts/<SYMBOL>/archive/prompt_<TARGET>_<SYMBOL>_YYYYMMDD_HHMM.txt`
 - Parsed AI output (manual paste flow) is saved to `prompts/<SYMBOL>/latest_analysis.json`
+
+## Local Copilot (no external API)
+- Config block: `copilot` in `config/default.yaml`
+- The runner generates local recommendations for each summary timeframe
+- Files: `prompts/<SYMBOL>/latest_copilot_advice.json` and `latest_copilot_advice_<TF>.json`
+- Archive: `prompts/<SYMBOL>/archive/copilot_<SYMBOL>_YYYYMMDD_HHMM.json`
+- The recommendation blends aggregate score + ML + ATR + support/resistance for `action`, `entry`, `stop_loss`, `take_profit`, `risk_reward`
 
 ## Configuration
 - Main file: `config/default.yaml`

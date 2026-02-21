@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from threading import Thread
 from typing import Any, Dict, List, Optional
@@ -26,6 +27,7 @@ from engine.daily_regime import classify_regime
 from engine.event_bus import EventBus
 from engine.state import RunnerState
 from indicators.registry import IndicatorRegistry, load_indicators
+from ml.copilot import TradingCopilot
 from ml.inference import load_model_or_none, run_live_inference
 
 logger = logging.getLogger(__name__)
@@ -164,6 +166,21 @@ class Runner:
             self.ml_indicator_names = sorted(config.get("indicator_weights", {}).keys())
         self.ml_model = load_model_or_none(self.ml_model_path) if self.ml_enabled else None
         self._ml_missing_warned = False
+
+        copilot_cfg = config.get("copilot", {})
+        self.copilot_enabled = bool(copilot_cfg.get("enabled", True))
+        copilot_output_dir = Path(str(copilot_cfg.get("output_dir", "prompts")))
+        if not copilot_output_dir.is_absolute():
+            copilot_output_dir = project_root() / copilot_output_dir
+        self.copilot_output_dir = copilot_output_dir / self.symbol
+        self.copilot_archive = bool(copilot_cfg.get("archive", True))
+        self.copilot = TradingCopilot(
+            min_confidence=float(copilot_cfg.get("min_confidence", 0.60)),
+            min_rr=float(copilot_cfg.get("min_rr", 1.2)),
+            stop_atr_mult=float(copilot_cfg.get("stop_atr_mult", 1.0)),
+            take_profit_atr_mult=float(copilot_cfg.get("take_profit_atr_mult", 1.8)),
+        )
+        self._last_copilot_signature: Dict[str, str] = {}
 
     def start(self) -> None:
         if self._running:
@@ -443,10 +460,12 @@ class Runner:
             tf_view = self._build_tf_view(tf, candles_by_tf)
             tf_results = self._compute_indicators(tf_view, tf)
             tf_agg = aggregate(tf_results, self.config, market_regime)
+            tf_ml = self._maybe_run_ml(candles_by_tf, tf_results, anchor_timeframe=tf)
             tf_last = self._select_latest_closed_candle(tf, candles) or candles[-1]
             summary_payloads[tf] = {
                 "results": tf_results,
                 "aggregate": tf_agg,
+                "ml_result": tf_ml,
                 "ohlcv": {
                     "open": tf_last.open,
                     "high": tf_last.high,
@@ -460,11 +479,13 @@ class Runner:
         if primary_tf in summary_payloads:
             primary_results = summary_payloads[primary_tf]["results"]
             primary_agg = summary_payloads[primary_tf]["aggregate"]
+            primary_ml = summary_payloads[primary_tf]["ml_result"]
             primary_ohlcv = summary_payloads[primary_tf]["ohlcv"]
         else:
             tf_view = self._build_tf_view(base_tf, candles_by_tf)
             primary_results = self._compute_indicators(tf_view, base_tf)
             primary_agg = aggregate(primary_results, self.config, market_regime)
+            primary_ml = self._maybe_run_ml(candles_by_tf, primary_results, anchor_timeframe=base_tf)
             last_candle = self._select_latest_closed_candle(base_tf, candles_by_tf.get(base_tf, []))
             primary_ohlcv = (
                 {
@@ -483,7 +504,7 @@ class Runner:
         self.state.indicators = primary_results
         self.state.aggregate = primary_agg
         self.state.market_regime = market_regime
-        self.state.ml_result = self._maybe_run_ml(candles_by_tf, primary_results)
+        self.state.ml_result = primary_ml
 
         if primary_agg.alignment:
             self.event_bus.publish(
@@ -529,7 +550,7 @@ class Runner:
                             include_indicators=include_indicators,
                             market_regime=market_regime,
                             sentiment=self.state.sentiment,
-                            ml_result=self.state.ml_result,
+                            ml_result=payload.get("ml_result", {}),
                             candle_timestamp=last_candle_timestamp,
                             candle_close_time=last_candle_close_time,
                         )
@@ -543,18 +564,20 @@ class Runner:
                         include_indicators=include_indicators,
                         market_regime=market_regime,
                         sentiment=self.state.sentiment,
-                        ml_result=self.state.ml_result,
+                        ml_result=primary_ml,
                         candle_timestamp=last_candle_timestamp,
                         candle_close_time=last_candle_close_time,
                     )
                 self._last_logged_candle_ts = last_candle_timestamp
 
+        self._maybe_write_copilot_advice(summary_payloads, market_regime, last_candle_timestamp)
         self._maybe_generate_prompt(candles_by_tf, primary_results, market_regime)
 
     def _maybe_run_ml(
         self,
         candles_by_tf: Dict[str, List[Candle]],
         indicators: List[IndicatorResult],
+        anchor_timeframe: Optional[str] = None,
     ) -> Dict[str, Any]:
         if not self.ml_enabled:
             return {}
@@ -567,7 +590,7 @@ class Runner:
                     {"path": str(self.ml_model_path)},
                 )
             return {}
-        base_tf = self.csv_anchor_timeframe
+        base_tf = str(anchor_timeframe or self.csv_anchor_timeframe)
         candles = candles_by_tf.get(base_tf, [])
         closes = [c.close for c in candles]
         if len(closes) < 3:
@@ -593,6 +616,70 @@ class Runner:
         except Exception as exc:
             self.event_bus.publish("error", "ML inference failed", {"error": str(exc)})
             return {}
+
+    @staticmethod
+    def _write_json_file(path: Path, payload: Dict[str, Any]) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, indent=2, ensure_ascii=True), encoding="utf-8")
+
+    def _maybe_write_copilot_advice(
+        self,
+        summary_payloads: Dict[str, Dict[str, Any]],
+        market_regime: MarketRegime,
+        anchor_timestamp: Optional[datetime],
+    ) -> None:
+        if not self.copilot_enabled or not summary_payloads:
+            return
+        try:
+            generated_at = datetime.now(timezone.utc).isoformat()
+            bundle: Dict[str, Any] = {
+                "generated_at_utc": generated_at,
+                "symbol": self.symbol,
+                "trade_mode": self.trade_mode,
+                "market_regime": market_regime.value,
+                "timeframes": {},
+            }
+            for tf, payload in summary_payloads.items():
+                advice = self.copilot.build_advice(
+                    symbol=self.symbol,
+                    timeframe=tf,
+                    aggregate=payload["aggregate"],
+                    indicators=payload["results"],
+                    ohlcv=payload["ohlcv"],
+                    ml_result=payload.get("ml_result", {}),
+                    market_regime=market_regime.value,
+                )
+                bundle["timeframes"][tf] = advice
+                signature = (
+                    f"{advice.get('action')}|{advice.get('entry')}|{advice.get('stop_loss')}|"
+                    f"{advice.get('take_profit')}|{advice.get('confidence')}"
+                )
+                if advice.get("actionable") and self._last_copilot_signature.get(tf) != signature:
+                    self.event_bus.publish(
+                        "info",
+                        "Copilot actionable setup",
+                        {
+                            "symbol": self.symbol,
+                            "timeframe": tf,
+                            "action": advice.get("action"),
+                            "confidence": advice.get("confidence"),
+                            "entry": advice.get("entry"),
+                            "stop_loss": advice.get("stop_loss"),
+                            "take_profit": advice.get("take_profit"),
+                            "risk_reward": advice.get("risk_reward"),
+                        },
+                    )
+                self._last_copilot_signature[tf] = signature
+                self._write_json_file(self.copilot_output_dir / f"latest_copilot_advice_{tf}.json", advice)
+
+            self._write_json_file(self.copilot_output_dir / "latest_copilot_advice.json", bundle)
+            if self.copilot_archive and anchor_timestamp is not None:
+                stamp = anchor_timestamp.astimezone(timezone.utc).strftime("%Y%m%d_%H%M")
+                archive_file = self.copilot_output_dir / "archive" / f"copilot_{self.symbol}_{stamp}.json"
+                self._write_json_file(archive_file, bundle)
+        except Exception as exc:
+            logger.exception("Copilot advice generation failed: %s", exc)
+            self.event_bus.publish("error", "Copilot advice generation failed", {"error": str(exc)})
 
     def _extract_patterns(self, indicators: List[IndicatorResult]) -> List[Dict[str, Any]]:
         pattern_indicator = next((item for item in indicators if item.name == "pattern_detector"), None)

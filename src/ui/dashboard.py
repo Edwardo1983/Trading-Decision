@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 import csv
+import json
 import os
 import re
 import subprocess
@@ -212,6 +213,85 @@ def _load_latest_row_for_timeframe(csv_base_path: Path, symbol: str, timeframe: 
     return None, None
 
 
+def _safe_float(value: object, default: float = 0.0) -> float:
+    try:
+        if value in (None, ""):
+            return default
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _parse_indicator_payload(row: Dict[str, str], indicator: str) -> Dict[str, object]:
+    raw = row.get(f"ind_{indicator}")
+    if isinstance(raw, dict):
+        return raw
+    if raw in (None, ""):
+        return {}
+    text = str(raw).strip()
+    if not text:
+        return {}
+    try:
+        value = json.loads(text)
+    except Exception:
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _estimate_trade_plan(row: Dict[str, str], final_state: str) -> Dict[str, Optional[float]]:
+    close = _safe_float(row.get("close"), 0.0)
+    if close <= 0:
+        return {"entry": None, "stop_loss": None, "take_profit": None, "rr": None}
+
+    atr_payload = _parse_indicator_payload(row, "atr_regime")
+    atr = max(_safe_float(atr_payload.get("atr_short")), _safe_float(atr_payload.get("atr_long")))
+    if atr <= 0:
+        atr = close * 0.002
+
+    sr_payload = _parse_indicator_payload(row, "support_resistance")
+    nearest_support = _safe_float(sr_payload.get("nearest_support")) or None
+    nearest_resistance = _safe_float(sr_payload.get("nearest_resistance")) or None
+
+    entry = close
+    stop_loss: Optional[float] = None
+    take_profit: Optional[float] = None
+
+    if final_state == "BUY":
+        sl_candidates = [entry - atr]
+        if nearest_support is not None and nearest_support < entry:
+            sl_candidates.append(nearest_support)
+        stop_loss = max(value for value in sl_candidates if value < entry)
+
+        tp_candidates = [entry + atr * 1.8]
+        if nearest_resistance is not None and nearest_resistance > entry:
+            tp_candidates.append(nearest_resistance)
+        take_profit = min(value for value in tp_candidates if value > entry)
+    elif final_state == "SELL":
+        sl_candidates = [entry + atr]
+        if nearest_resistance is not None and nearest_resistance > entry:
+            sl_candidates.append(nearest_resistance)
+        stop_loss = min(value for value in sl_candidates if value > entry)
+
+        tp_candidates = [entry - atr * 1.8]
+        if nearest_support is not None and nearest_support < entry:
+            tp_candidates.append(nearest_support)
+        take_profit = max(value for value in tp_candidates if value < entry)
+
+    rr = None
+    if stop_loss is not None and take_profit is not None:
+        risk = abs(entry - stop_loss)
+        reward = abs(take_profit - entry)
+        if risk > 0:
+            rr = reward / risk
+
+    return {
+        "entry": entry,
+        "stop_loss": stop_loss,
+        "take_profit": take_profit,
+        "rr": rr,
+    }
+
+
 def _state_color(state: str) -> str:
     normalized = str(state or "").upper()
     if normalized == "BUY":
@@ -245,6 +325,23 @@ def _render_summary_card(symbol: str, timeframe: str, row: Optional[Dict[str, st
     captured = str(row.get("captured_at") or "-")
     lag = str(row.get("capture_lag_sec") or "-")
     color = _state_color(final_state)
+    ml_label = str(row.get("ml_label") or "-").upper()
+    ml_conf = _safe_float(row.get("ml_confidence"), 0.0)
+    trade_plan = _estimate_trade_plan(row, final_state)
+
+    entry = trade_plan.get("entry")
+    stop_loss = trade_plan.get("stop_loss")
+    take_profit = trade_plan.get("take_profit")
+    rr = trade_plan.get("rr")
+
+    if entry is not None and stop_loss is not None and take_profit is not None:
+        setup_line = (
+            f"E:{entry:.2f} | SL:{stop_loss:.2f} | TP:{take_profit:.2f}"
+        )
+        rr_line = f"R:R {rr:.2f}" if rr is not None else "-"
+    else:
+        setup_line = "-"
+        rr_line = "-"
 
     st.markdown(
         (
@@ -252,7 +349,10 @@ def _render_summary_card(symbol: str, timeframe: str, row: Optional[Dict[str, st
             f"<div class='summary-title'>{symbol} · {timeframe}</div>"
             f"<div class='summary-line'><span>FINAL:</span><strong style='color:{color}'>{final_state}</strong></div>"
             f"<div class='summary-line'><span>BUY / SELL / NO:</span><strong>{buy:.1f}% / {sell:.1f}% / {no_trade:.1f}%</strong></div>"
+            f"<div class='summary-line'><span>ML:</span><strong>{ml_label} ({ml_conf:.2f})</strong></div>"
             f"<div class='summary-line'><span>REGIME:</span><strong>{regime}</strong></div>"
+            f"<div class='summary-line'><span>SETUP:</span><strong>{setup_line}</strong></div>"
+            f"<div class='summary-line'><span>RR:</span><strong>{rr_line}</strong></div>"
             f"<div class='summary-line'><span>TS:</span><strong>{ts}</strong></div>"
             f"<div class='summary-line'><span>CAPTURED:</span><strong>{captured}</strong></div>"
             f"<div class='summary-line'><span>LAG SEC:</span><strong>{lag}</strong></div>"

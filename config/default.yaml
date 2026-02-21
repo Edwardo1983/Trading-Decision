@@ -274,6 +274,15 @@ ml:
   epochs: 700
   event_confidence: 0.7
 
+copilot:
+  enabled: true
+  output_dir: "prompts"
+  min_confidence: 0.6
+  min_rr: 1.2
+  stop_atr_mult: 1.0
+  take_profit_atr_mult: 1.8
+  archive: true
+
 prompt_generator:
   enabled: true
   output_dir: "prompts"
