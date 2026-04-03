@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import suppress
 import json
 import logging
 from datetime import datetime, timedelta, timezone
+from enum import Enum
 from pathlib import Path
 from threading import Thread
 from typing import Any, Dict, List, Optional
@@ -11,7 +13,7 @@ from typing import Any, Dict, List, Optional
 from core.models import Candle, EngineState, IndicatorResult, MarketRegime, RunnerSnapshot
 from core.utils.clock_sync import ClockSync
 from core.utils.config_loader import load_config
-from core.utils.paths import project_root
+from core.utils.paths import logs_dir, project_root
 from core.utils.ring_buffer import RingBuffer
 from core.utils.sound_alert import play_sound
 from core.timeframes import to_seconds
@@ -28,7 +30,7 @@ from engine.event_bus import EventBus
 from engine.state import RunnerState
 from indicators.registry import IndicatorRegistry, load_indicators
 from ml.copilot import TradingCopilot
-from ml.inference import load_model_or_none, run_live_inference
+from ml.inference import load_model_with_status, run_live_inference
 
 logger = logging.getLogger(__name__)
 
@@ -47,10 +49,17 @@ class Runner:
         self._thread: Optional[Thread] = None
 
         app = config.get("app", {})
-        self.symbol = app.get("symbol", "BTCUSDT")
+        self.symbol = app.get("symbol", "BTCUSDC")
         self.trade_mode = str(app.get("trade_mode", "short")).strip().lower()
+        configured_symbols = [str(item).strip().upper() for item in app.get("symbols", []) if str(item).strip()]
         trade_modes = app.get("trade_modes", {}) if isinstance(app.get("trade_modes", {}), dict) else {}
         mode_cfg = trade_modes.get(self.trade_mode, {}) if isinstance(trade_modes, dict) else {}
+        self._active_issues: Dict[str, str] = {}
+        self._runtime_logs_dir = logs_dir()
+        self._runtime_logs_dir.mkdir(parents=True, exist_ok=True)
+        self.runtime_status_path = self._runtime_logs_dir / f"runtime_status_{self.symbol}.json"
+        self.runtime_status_alias_path = self._runtime_logs_dir / "runtime_status.json"
+        self._write_runtime_status_alias = len(configured_symbols) <= 1
 
         mode_analysis_tfs = mode_cfg.get("analysis_timeframes", [])
         mode_summary_tfs = mode_cfg.get("summary_timeframes", [])
@@ -164,8 +173,21 @@ class Runner:
         self.ml_indicator_names = list(config.get("csv", {}).get("include_indicators", []))
         if not self.ml_indicator_names:
             self.ml_indicator_names = sorted(config.get("indicator_weights", {}).keys())
-        self.ml_model = load_model_or_none(self.ml_model_path) if self.ml_enabled else None
-        self._ml_missing_warned = False
+        self.ml_model = None
+        self.ml_model_status: Dict[str, Any] = {
+            "state": "disabled" if not self.ml_enabled else "missing",
+            "reason": "ML disabled." if not self.ml_enabled else "Model not loaded yet.",
+            "model_path": str(self.ml_model_path),
+            "identity": {"symbol": self.symbol, "trade_mode": self.trade_mode},
+            "feature_count": None,
+            "metadata_path": None,
+            "candidates": [str(self.ml_model_path)],
+        }
+        self._ml_last_status_signature = ""
+        self._ml_last_reload_attempt: Optional[datetime] = None
+        self._ml_reload_interval_seconds = max(30, int(ml_cfg.get("reload_interval_seconds", 300)))
+        if self.ml_enabled:
+            self._load_ml_model(force=True, publish_event=False)
 
         copilot_cfg = config.get("copilot", {})
         self.copilot_enabled = bool(copilot_cfg.get("enabled", True))
@@ -181,6 +203,7 @@ class Runner:
             take_profit_atr_mult=float(copilot_cfg.get("take_profit_atr_mult", 1.8)),
         )
         self._last_copilot_signature: Dict[str, str] = {}
+        self._sync_runtime_state(EngineState.STOPPED)
 
     def start(self) -> None:
         if self._running:
@@ -193,18 +216,23 @@ class Runner:
         self._running = False
         if self._ws_client:
             self._ws_client.stop()
+        self._sync_runtime_state(EngineState.STOPPED)
 
     def run_forever(self, stop_flag: Optional[Path] = None) -> None:
-        self.state.state = EngineState.RUNNING
+        self._sync_runtime_state(EngineState.BOOTSTRAPPING)
+        fatal_error: Optional[str] = None
         try:
             asyncio.run(self._run_loop(stop_flag))
         except Exception as exc:
             logger.exception("Runner error: %s", exc)
-            self.state.state = EngineState.ERROR
-            self.state.errors.append(str(exc))
+            fatal_error = str(exc)
+            self._set_issue("runner:fatal", f"Runner error: {fatal_error}")
+            self._sync_runtime_state(EngineState.ERROR)
         finally:
-            self.state.state = EngineState.STOPPED
             self._running = False
+            if fatal_error is None and self.state.state != EngineState.ERROR:
+                self._clear_issue("runner:fatal")
+                self._sync_runtime_state(EngineState.STOPPED)
 
     async def _run_loop(self, stop_flag: Optional[Path]) -> None:
         await self._bootstrap_buffers()
@@ -219,13 +247,17 @@ class Runner:
             try:
                 await self._update_from_rest()
                 await self._compute_cycle()
+                self._clear_issue("loop")
+                self._sync_runtime_state(EngineState.READY)
             except Exception as exc:
                 logger.exception("Loop error: %s", exc)
                 self.event_bus.publish("error", "Loop error", {"error": str(exc)})
-                self.state.errors.append(str(exc))
+                self._set_issue("loop", f"Loop error: {exc}")
+                self._sync_runtime_state(EngineState.DEGRADED)
             await self._sleep_until_next_cycle(stop_flag)
 
         await self._stop_ws()
+        await self._close_resources()
 
     async def _sleep_until_next_cycle(self, stop_flag: Optional[Path]) -> None:
         sleep_seconds = max(1, int(self.refresh_seconds))
@@ -257,10 +289,12 @@ class Runner:
             remaining -= step
 
     async def _bootstrap_buffers(self) -> None:
+        self._sync_runtime_state(EngineState.BOOTSTRAPPING)
         await self._select_provider()
         self._init_sentiment()
         await self._update_from_rest(initial=True)
         self.event_bus.publish("info", "Buffers initialized")
+        self._sync_runtime_state(EngineState.READY)
 
     async def _select_provider(self) -> None:
         if self.provider_name != "auto":
@@ -301,9 +335,21 @@ class Runner:
             return
 
         tasks = [self.provider.get_candles(self.symbol, tf, limit=self.rest_limit) for tf in due_timeframes]
-        results = await asyncio.gather(*tasks)
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        successful_fetches = 0
 
         for tf, candles in zip(due_timeframes, results):
+            issue_key = f"rest:{tf}"
+            if isinstance(candles, Exception):
+                self._set_issue(issue_key, f"REST update failed for {tf}: {candles}")
+                self.event_bus.publish(
+                    "warning",
+                    "REST update failed",
+                    {"timeframe": tf, "error": str(candles), "symbol": self.symbol},
+                )
+                continue
+            self._clear_issue(issue_key)
+            successful_fetches += 1
             buffer = self.buffers[tf]
             if initial:
                 buffer.extend(candles)
@@ -319,6 +365,9 @@ class Runner:
                 tf_period = max(1, int(self.refresh_seconds))
             interval = max(int(self.refresh_seconds), tf_period)
             self._tf_next_fetch[tf] = now_epoch + max(1, interval)
+
+        if initial and successful_fetches == 0:
+            raise RuntimeError(f"Bootstrap REST fetch failed for {self.symbol} on {', '.join(due_timeframes)}")
 
     async def _start_ws(self) -> None:
         app = self.config.get("app", {})
@@ -349,43 +398,61 @@ class Runner:
             self._ws_client.stop()
         if self._ws_task:
             self._ws_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._ws_task
+        self._ws_task = None
+        self._ws_client = None
 
     async def _ws_listener(self, timeframe: str, provider_name: str) -> None:
         if not self._ws_client:
             return
-        if provider_name == "mexc":
+        issue_key = f"ws:{timeframe}"
+        try:
+            if provider_name == "mexc":
+                async for payload in self._ws_client.listen():
+                    candle = mexc_ws_to_candle(payload)
+                    if candle is None:
+                        continue
+                    self._clear_issue(issue_key)
+                    buffer = self.buffers[timeframe]
+                    last = buffer.last()
+                    if last and candle.timestamp == last.timestamp:
+                        buffer.replace_last(candle)
+                    else:
+                        buffer.append(candle)
+                        self.event_bus.publish("info", "WS candle update", {"tf": timeframe, "provider": "mexc"})
+                return
             async for payload in self._ws_client.listen():
-                candle = mexc_ws_to_candle(payload)
-                if candle is None:
-                    continue
-                buffer = self.buffers[timeframe]
-                last = buffer.last()
-                if last and candle.timestamp == last.timestamp:
-                    buffer.replace_last(candle)
-                else:
-                    buffer.append(candle)
-                    self.event_bus.publish("info", "WS candle update", {"tf": timeframe, "provider": "mexc"})
-            return
-        async for payload in self._ws_client.listen():
-            candle = binance_ws_to_candle(payload)
-            # Binance marks closed candles with x=true
-            closed = payload.get("k", {}).get("x", False)
-            if closed:
-                buffer = self.buffers[timeframe]
-                last = buffer.last()
-                if last and candle.timestamp < last.timestamp:
-                    continue
-                action = "append"
-                if last and candle.timestamp == last.timestamp:
-                    buffer.replace_last(candle)
-                    action = "replace"
-                else:
-                    buffer.append(candle)
-                self.event_bus.publish(
-                    "info",
-                    "WS candle closed",
-                    {"tf": timeframe, "provider": "binance", "action": action},
-                )
+                candle = binance_ws_to_candle(payload)
+                # Binance marks closed candles with x=true
+                closed = payload.get("k", {}).get("x", False)
+                if closed:
+                    self._clear_issue(issue_key)
+                    buffer = self.buffers[timeframe]
+                    last = buffer.last()
+                    if last and candle.timestamp < last.timestamp:
+                        continue
+                    action = "append"
+                    if last and candle.timestamp == last.timestamp:
+                        buffer.replace_last(candle)
+                        action = "replace"
+                    else:
+                        buffer.append(candle)
+                    self.event_bus.publish(
+                        "info",
+                        "WS candle closed",
+                        {"tf": timeframe, "provider": "binance", "action": action},
+                    )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            self._set_issue(issue_key, f"WS listener failed for {timeframe}: {exc}")
+            self.event_bus.publish(
+                "warning",
+                "WS listener failed",
+                {"timeframe": timeframe, "provider": provider_name, "error": str(exc)},
+            )
+            self._sync_runtime_state(EngineState.DEGRADED)
 
     def _resolve_regime_timeframe(self, candles_by_tf: Dict[str, List[Candle]]) -> str:
         regime_cfg = self.config.get("daily_regime", {})
@@ -444,8 +511,10 @@ class Runner:
         if self.sentiment_client:
             try:
                 self.state.sentiment = await self.sentiment_client.refresh(self.symbol)
+                self._clear_issue("sentiment")
             except Exception as exc:
                 logger.debug("Sentiment refresh failed: %s", exc)
+                self._set_issue("sentiment", f"Sentiment refresh failed: {exc}")
         if self.state.sentiment:
             candles_by_tf["sentiment"] = [self.state.sentiment]
         base_tf = self.csv_anchor_timeframe
@@ -505,6 +574,7 @@ class Runner:
         self.state.aggregate = primary_agg
         self.state.market_regime = market_regime
         self.state.ml_result = primary_ml
+        self.state.health.last_checked = self.state.last_update
 
         if primary_agg.alignment:
             self.event_bus.publish(
@@ -571,7 +641,12 @@ class Runner:
                 self._last_logged_candle_ts = last_candle_timestamp
 
         self._maybe_write_copilot_advice(summary_payloads, market_regime, last_candle_timestamp)
-        self._maybe_generate_prompt(candles_by_tf, primary_results, market_regime)
+        self._maybe_generate_prompt(
+            candles_by_tf=candles_by_tf,
+            summary_payloads=summary_payloads,
+            market_regime=market_regime,
+            primary_timeframe=primary_tf,
+        )
 
     def _maybe_run_ml(
         self,
@@ -581,20 +656,15 @@ class Runner:
     ) -> Dict[str, Any]:
         if not self.ml_enabled:
             return {}
+        self._load_ml_model()
+        base_payload = self._ml_status_payload()
         if self.ml_model is None:
-            if not self._ml_missing_warned:
-                self._ml_missing_warned = True
-                self.event_bus.publish(
-                    "warning",
-                    "ML enabled but model file missing/unreadable",
-                    {"path": str(self.ml_model_path)},
-                )
-            return {}
+            return base_payload
         base_tf = str(anchor_timeframe or self.csv_anchor_timeframe)
         candles = candles_by_tf.get(base_tf, [])
         closes = [c.close for c in candles]
         if len(closes) < 3:
-            return {}
+            return base_payload
         try:
             result = run_live_inference(
                 closes=closes,
@@ -602,8 +672,11 @@ class Runner:
                 indicator_names=self.ml_indicator_names,
                 model=self.ml_model,
                 lookback=self.ml_lookback,
+                expected_symbol=self.symbol,
+                expected_trade_mode=self.trade_mode,
             )
             payload = {
+                **base_payload,
                 "label": result.label,
                 "confidence": round(float(result.confidence), 4),
                 "probability_up": round(float(result.probability_up), 4),
@@ -614,13 +687,42 @@ class Runner:
                 self.event_bus.publish("info", "ML advisory update", payload)
             return payload
         except Exception as exc:
+            self._set_issue("ml:inference", f"ML inference failed: {exc}")
+            self._sync_runtime_state(EngineState.DEGRADED)
             self.event_bus.publish("error", "ML inference failed", {"error": str(exc)})
-            return {}
+            return {**base_payload, "error": str(exc)}
+
+    @staticmethod
+    def _to_json_compatible(value: Any) -> Any:
+        if isinstance(value, dict):
+            return {str(key): Runner._to_json_compatible(item) for key, item in value.items()}
+        if isinstance(value, (list, tuple, set)):
+            return [Runner._to_json_compatible(item) for item in value]
+        if isinstance(value, (datetime,)):
+            return value.isoformat()
+        if isinstance(value, Path):
+            return str(value)
+        if isinstance(value, Enum):
+            return value.value
+        item_method = getattr(value, "item", None)
+        if callable(item_method):
+            try:
+                return Runner._to_json_compatible(item_method())
+            except Exception:
+                pass
+        tolist_method = getattr(value, "tolist", None)
+        if callable(tolist_method) and not isinstance(value, (str, bytes)):
+            try:
+                return Runner._to_json_compatible(tolist_method())
+            except Exception:
+                pass
+        return value
 
     @staticmethod
     def _write_json_file(path: Path, payload: Dict[str, Any]) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(payload, indent=2, ensure_ascii=True), encoding="utf-8")
+        normalized = Runner._to_json_compatible(payload)
+        path.write_text(json.dumps(normalized, indent=2, ensure_ascii=True), encoding="utf-8")
 
     def _maybe_write_copilot_advice(
         self,
@@ -697,31 +799,53 @@ class Runner:
     def _maybe_generate_prompt(
         self,
         candles_by_tf: Dict[str, List[Candle]],
-        indicators: List[IndicatorResult],
+        summary_payloads: Dict[str, Dict[str, Any]],
         market_regime: MarketRegime,
+        primary_timeframe: str,
     ) -> None:
         if not self.prompt_generator:
             return
         if not self.prompt_generator.should_refresh(self.prompt_interval_minutes):
             return
-        base_tf = self.summary_timeframes[0] if self.summary_timeframes else self.csv_anchor_timeframe
+        timeframe_contexts: Dict[str, Dict[str, Any]] = {}
+        for tf in self.summary_timeframes:
+            payload = summary_payloads.get(tf)
+            candles = candles_by_tf.get(tf, [])
+            if not payload or not candles:
+                continue
+            timeframe_contexts[tf] = {
+                "candles": candles,
+                "indicators": payload["results"],
+                "sentiment": self.state.sentiment,
+                "market_regime": market_regime,
+                "day_classification": market_regime.value,
+                "patterns": self._extract_patterns(payload["results"]),
+                "note": "Primary execution timeframe" if tf == primary_timeframe else "Context timeframe",
+            }
+        base_tf = primary_timeframe if primary_timeframe in timeframe_contexts else (
+            self.summary_timeframes[0] if self.summary_timeframes else self.csv_anchor_timeframe
+        )
         candles = candles_by_tf.get(base_tf, [])
         if not candles and base_tf != self.csv_anchor_timeframe:
             candles = candles_by_tf.get(self.csv_anchor_timeframe, [])
         if not candles:
             return
+        primary_payload = summary_payloads.get(base_tf, {})
+        primary_indicators = primary_payload.get("results", self.state.indicators)
         try:
             prompts = self.prompt_generator.generate_prompt_bundle(
                 symbol=self.symbol,
                 candles=candles,
-                indicators=indicators,
+                indicators=primary_indicators,
                 sentiment=self.state.sentiment,
                 market_regime=market_regime,
                 day_classification=market_regime.value,
-                patterns=self._extract_patterns(indicators),
+                patterns=self._extract_patterns(primary_indicators),
                 save_to_file=self.prompt_auto_save,
+                timeframe_contexts=timeframe_contexts,
+                primary_timeframe=base_tf,
             )
-            latest_path = self.prompt_generator.output_dir / "latest_prompt.txt"
+            latest_path = self.prompt_generator.output_dir / "latest_prompt_bundle.txt"
             self.event_bus.publish(
                 "info",
                 "Prompt generated for Claude/Codex",
@@ -748,7 +872,132 @@ class Runner:
             errors=self.state.errors,
             ml_result=self.state.ml_result,
             last_ohlcv=self.state.last_ohlcv,
+            health=self.state.health,
         )
+
+    def _set_issue(self, key: str, message: str) -> None:
+        if message:
+            self._active_issues[key] = str(message)
+
+    def _clear_issue(self, key: str) -> None:
+        self._active_issues.pop(key, None)
+
+    def _sync_runtime_state(self, requested_state: EngineState) -> None:
+        issues = list(dict.fromkeys(str(item) for item in self._active_issues.values() if str(item).strip()))
+        self.state.errors = issues
+        if requested_state in {EngineState.ERROR, EngineState.STOPPED, EngineState.BOOTSTRAPPING}:
+            self.state.state = requested_state
+        elif issues:
+            self.state.state = EngineState.DEGRADED
+        else:
+            self.state.state = requested_state
+        self.state._sync_health_flags()
+        self._write_runtime_status()
+
+    def _ml_status_payload(self) -> Dict[str, Any]:
+        payload = dict(self.ml_model_status)
+        payload.setdefault("enabled", self.ml_enabled)
+        return payload
+
+    def _load_ml_model(self, *, force: bool = False, publish_event: bool = True) -> None:
+        if not self.ml_enabled:
+            self.ml_model = None
+            self.ml_model_status = {
+                "state": "disabled",
+                "reason": "ML disabled.",
+                "model_path": str(self.ml_model_path),
+                "identity": {"symbol": self.symbol, "trade_mode": self.trade_mode},
+                "feature_count": None,
+                "metadata_path": None,
+                "candidates": [str(self.ml_model_path)],
+                "enabled": False,
+            }
+            self._clear_issue("ml:model")
+            return
+
+        now = self.clock_sync.now_utc()
+        if not force and self._ml_last_reload_attempt is not None:
+            elapsed = (now - self._ml_last_reload_attempt).total_seconds()
+            if self.ml_model is not None and elapsed < self._ml_reload_interval_seconds:
+                return
+            if self.ml_model is None and elapsed < min(60, self._ml_reload_interval_seconds):
+                return
+
+        self._ml_last_reload_attempt = now
+        outcome = load_model_with_status(
+            self.ml_model_path,
+            expected_symbol=self.symbol,
+            expected_trade_mode=self.trade_mode,
+        )
+        self.ml_model = outcome.model
+        self.ml_model_status = {
+            "state": outcome.status.state,
+            "reason": outcome.status.reason,
+            "model_path": outcome.status.model_path,
+            "metadata_path": outcome.status.metadata_path,
+            "identity": {
+                "symbol": outcome.status.identity.symbol,
+                "trade_mode": outcome.status.identity.trade_mode,
+                "model_name": outcome.status.identity.model_name,
+                "schema_version": outcome.status.identity.schema_version,
+            },
+            "feature_count": outcome.status.feature_count,
+            "candidates": list(outcome.status.candidates),
+            "enabled": True,
+        }
+        signature = json.dumps(self._to_json_compatible(self.ml_model_status), sort_keys=True)
+        if signature != self._ml_last_status_signature and publish_event:
+            level = "info" if outcome.model is not None else "warning"
+            self.event_bus.publish(level, "ML model status updated", dict(self.ml_model_status))
+        self._ml_last_status_signature = signature
+        if outcome.model is None:
+            self._set_issue("ml:model", outcome.status.reason)
+        else:
+            self._clear_issue("ml:model")
+            self._clear_issue("ml:inference")
+
+    def _runtime_status_payload(self) -> Dict[str, Any]:
+        return {
+            "generated_at_utc": self.clock_sync.now_utc().isoformat(),
+            "symbol": self.symbol,
+            "trade_mode": self.trade_mode,
+            "provider": getattr(self.provider, "name", self.provider_name),
+            "state": self.state.state.value if hasattr(self.state.state, "value") else str(self.state.state),
+            "timeframes": list(self.timeframes),
+            "summary_timeframes": list(self.summary_timeframes),
+            "last_update": self.state.last_update,
+            "issues": list(self.state.errors),
+            "market_regime": self.state.market_regime,
+            "ml": self._ml_status_payload(),
+            "health": {
+                "state": self.state.health.state,
+                "healthy": self.state.health.healthy,
+                "ready": self.state.health.ready,
+                "bootstrapping": self.state.health.bootstrapping,
+                "degraded": self.state.health.degraded,
+                "issues": list(self.state.health.issues),
+                "last_checked": self.state.health.last_checked,
+            },
+        }
+
+    def _write_runtime_status(self) -> None:
+        payload = self._runtime_status_payload()
+        self._write_json_file(self.runtime_status_path, payload)
+        if self._write_runtime_status_alias:
+            self._write_json_file(self.runtime_status_alias_path, payload)
+
+    async def _close_resources(self) -> None:
+        for provider in (self._binance_provider, self._mexc_provider):
+            client = getattr(provider, "client", None)
+            aclose = getattr(client, "aclose", None)
+            if callable(aclose):
+                with suppress(Exception):
+                    await aclose()
+        if self.sentiment_client is not None:
+            aclose = getattr(self.sentiment_client, "aclose", None)
+            if callable(aclose):
+                with suppress(Exception):
+                    await aclose()
 
 
 def create_runner_from_config() -> Runner:

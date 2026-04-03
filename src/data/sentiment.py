@@ -1,12 +1,10 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 
 import httpx
-
-from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -27,21 +25,34 @@ class SentimentClient:
         self.spot_trade_depth = spot_trade_depth
         self._last_update: Optional[datetime] = None
         self._cache: Dict[str, Any] = {}
+        self._client: Optional[httpx.AsyncClient] = None
+        self._timeout = httpx.Timeout(10.0)
+        self._limits = httpx.Limits(max_connections=4, max_keepalive_connections=2)
+
+    def _get_client(self) -> httpx.AsyncClient:
+        if self._client is None or self._client.is_closed:
+            self._client = httpx.AsyncClient(timeout=self._timeout, limits=self._limits)
+        return self._client
+
+    async def aclose(self) -> None:
+        if self._client is not None and not self._client.is_closed:
+            await self._client.aclose()
+        self._client = None
 
     def _stale(self) -> bool:
         if self._last_update is None:
             return True
-        return datetime.utcnow() - self._last_update >= timedelta(seconds=self.refresh_seconds)
+        return datetime.now(timezone.utc) - self._last_update >= timedelta(seconds=self.refresh_seconds)
 
     async def _fetch_fear_greed(self) -> Optional[int]:
         if not self.fear_greed_enabled:
             return None
         url = "https://api.alternative.me/fng/"
         try:
-            async with httpx.AsyncClient(timeout=10) as client:
-                resp = await client.get(url)
-                resp.raise_for_status()
-                data = resp.json()
+            client = self._get_client()
+            resp = await client.get(url)
+            resp.raise_for_status()
+            data = resp.json()
             if data.get("data"):
                 return int(data["data"][0]["value"])
         except Exception as exc:
@@ -99,7 +110,7 @@ class SentimentClient:
             "trade_buy_volume": trade_buy_volume,
             "trade_sell_volume": trade_sell_volume,
             "price_change_pct": ticker_24h.get("priceChangePercent"),
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
         }
-        self._last_update = datetime.utcnow()
+        self._last_update = datetime.now(timezone.utc)
         return dict(self._cache)

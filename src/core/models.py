@@ -15,6 +15,9 @@ class SignalState(str, Enum):
 
 
 class EngineState(str, Enum):
+    BOOTSTRAPPING = "BOOTSTRAPPING"
+    READY = "READY"
+    DEGRADED = "DEGRADED"
     RUNNING = "RUNNING"
     STOPPED = "STOPPED"
     ERROR = "ERROR"
@@ -80,6 +83,19 @@ class Event:
 
 
 @dataclass
+class RuntimeHealth:
+    state: EngineState = EngineState.STOPPED
+    healthy: bool = False
+    ready: bool = False
+    bootstrapping: bool = False
+    degraded: bool = False
+    issues: List[str] = field(default_factory=list)
+    symbol_states: Dict[str, EngineState] = field(default_factory=dict)
+    symbol_issues: Dict[str, List[str]] = field(default_factory=dict)
+    last_checked: Optional[datetime] = None
+
+
+@dataclass
 class RunnerSnapshot:
     state: EngineState
     symbol: str
@@ -93,3 +109,4 @@ class RunnerSnapshot:
     errors: List[str]
     ml_result: Dict[str, Any] = field(default_factory=dict)
     last_ohlcv: Dict[str, float] = field(default_factory=dict)
+    health: RuntimeHealth = field(default_factory=RuntimeHealth)

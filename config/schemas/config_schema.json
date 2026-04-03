@@ -5,13 +5,39 @@
   "properties": {
     "app": {
       "type": "object",
-      "required": ["symbol", "timeframes", "refresh_seconds"],
+      "required": ["symbol", "symbols", "timeframes", "refresh_seconds"],
       "properties": {
         "symbol": {"type": "string"},
         "symbols": {"type": "array", "items": {"type": "string"}},
+        "trade_mode": {"type": "string", "enum": ["short", "long"]},
+        "summary_timeframes": {"type": "array", "items": {"type": "string"}},
+        "trade_modes": {
+          "type": "object",
+          "properties": {
+            "short": {
+              "type": "object",
+              "properties": {
+                "analysis_timeframes": {"type": "array", "items": {"type": "string"}},
+                "summary_timeframes": {"type": "array", "items": {"type": "string"}}
+              }
+            },
+            "long": {
+              "type": "object",
+              "properties": {
+                "analysis_timeframes": {"type": "array", "items": {"type": "string"}},
+                "summary_timeframes": {"type": "array", "items": {"type": "string"}}
+              }
+            }
+          }
+        },
         "market_type": {"type": "string"},
         "timeframes": {"type": "array", "items": {"type": "string"}},
-        "refresh_seconds": {"type": "number"}
+        "refresh_seconds": {"type": "number"},
+        "use_ws": {"type": "boolean"},
+        "ws_timeframe": {"type": "string"},
+        "buffer_size": {"type": "integer"},
+        "timezone": {"type": "string"},
+        "profile": {"type": "string"}
       }
     },
     "thresholds": {
@@ -29,6 +55,80 @@
     "indicator_params": {
       "type": "object",
       "additionalProperties": {"type": "object"}
+    },
+    "ml": {
+      "type": "object",
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "lookback": {"type": "integer"},
+        "model_path": {"type": "string"},
+        "target_lookahead": {"type": "integer"},
+        "target_threshold": {"type": "number"},
+        "buy_threshold": {"type": "number"},
+        "sell_threshold": {"type": "number"},
+        "min_trades_for_calibration": {"type": "integer"},
+        "learning_rate": {"type": "number"},
+        "l2": {"type": "number"},
+        "epochs": {"type": "integer"},
+        "event_confidence": {"type": "number"}
+      }
+    },
+    "copilot": {
+      "type": "object",
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "output_dir": {"type": "string"},
+        "min_confidence": {"type": "number"},
+        "min_rr": {"type": "number"},
+        "stop_atr_mult": {"type": "number"},
+        "take_profit_atr_mult": {"type": "number"},
+        "archive": {"type": "boolean"}
+      }
+    },
+    "prompt_generator": {
+      "type": "object",
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "output_dir": {"type": "string"},
+        "interval_minutes": {"type": "integer"},
+        "lookback_candles": {"type": "integer"},
+        "auto_save": {"type": "boolean"},
+        "targets": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "csv": {
+      "type": "object",
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "base_path": {"type": "string"},
+        "timeframe": {"type": "string"},
+        "rotate_daily": {"type": "boolean"},
+        "timestamp_source": {"type": "string"},
+        "minute_precision": {"type": "boolean"},
+        "include_indicators": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "time_sync": {
+      "type": "object",
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "servers": {"type": "array", "items": {"type": "string"}},
+        "timeout_seconds": {"type": "number"},
+        "sync_interval_seconds": {"type": "number"},
+        "max_offset_seconds": {"type": "number"},
+        "align_runner_to_clock": {"type": "boolean"},
+        "run_second_offset": {"type": "number"}
+      }
+    },
+    "sentiment": {
+      "type": "object",
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "refresh_seconds": {"type": "number"},
+        "long_short_period": {"type": "string"},
+        "fear_greed_enabled": {"type": "boolean"},
+        "spot_trade_depth": {"type": "number"}
+      }
     }
   }
 }

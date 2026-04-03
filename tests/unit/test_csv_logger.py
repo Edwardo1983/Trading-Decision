@@ -237,3 +237,51 @@ def test_csv_logger_capture_lag_uses_candle_close_time(tmp_path, monkeypatch):
         first = next(reader)
     assert first["captured_at"] == "2025-01-01T12:35:02+00:00"
     assert float(first["capture_lag_sec"]) == 3.0
+
+
+def test_csv_logger_caches_header_validation(tmp_path, monkeypatch):
+    fixed_time = datetime(2025, 1, 1, 12, 0, tzinfo=timezone.utc)
+
+    def fake_now_tz(_timezone: str):
+        return fixed_time
+
+    monkeypatch.setattr("data.export.csv_logger.now_tz", fake_now_tz)
+
+    original_reader = csv.reader
+    read_calls = {"count": 0}
+
+    def counting_reader(*args, **kwargs):
+        read_calls["count"] += 1
+        return original_reader(*args, **kwargs)
+
+    monkeypatch.setattr("data.export.csv_logger.csv.reader", counting_reader)
+
+    logger = CSVMinuteLogger(base_path=str(tmp_path), timezone="UTC", rotate_daily=True)
+    indicators = [
+        IndicatorResult(
+            name="ema_bias",
+            category="trend",
+            timeframe="1m",
+            value={"fast": 2, "slow": 1},
+            state=SignalState.BUY,
+            confidence=77.0,
+            reason="cross up",
+            weight=1.0,
+        )
+    ]
+
+    payload = dict(
+        symbol="BTCUSDT",
+        timeframe="1m",
+        ohlcv={"open": 1, "high": 2, "low": 0.5, "close": 1.5, "volume": 10},
+        indicators=indicators,
+        aggregate=None,
+        include_indicators=["ema_bias"],
+        market_regime=MarketRegime.UNKNOWN,
+        sentiment=None,
+    )
+
+    logger.log(**payload)
+    logger.log(**payload)
+
+    assert read_calls["count"] == 0

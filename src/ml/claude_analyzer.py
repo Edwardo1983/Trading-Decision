@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from core.models import Candle, IndicatorResult, MarketRegime
+from core.timeframes import to_seconds
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +25,73 @@ class AnalysisResult:
     reasoning: str
 
 
+@dataclass
+class PromptTimeframeContext:
+    timeframe: str
+    candles: List[Candle]
+    indicators: List[IndicatorResult]
+    sentiment: Dict[str, Any] = None
+    market_regime: MarketRegime = MarketRegime.UNKNOWN
+    day_classification: str = "unknown"
+    patterns: List[Dict[str, Any]] = None
+    note: str = ""
+
+    @classmethod
+    def from_value(cls, timeframe: str, value: Any) -> "PromptTimeframeContext":
+        if isinstance(value, cls):
+            return value
+        if not isinstance(value, dict):
+            raise TypeError(f"Unsupported timeframe context type for {timeframe}: {type(value)!r}")
+        return cls(
+            timeframe=timeframe,
+            candles=list(value.get("candles", [])),
+            indicators=list(value.get("indicators", [])),
+            sentiment=dict(value.get("sentiment", {}) or {}),
+            market_regime=value.get("market_regime", MarketRegime.UNKNOWN),
+            day_classification=str(value.get("day_classification", "unknown")),
+            patterns=list(value.get("patterns", [])),
+            note=str(value.get("note", "")),
+        )
+
+
+@dataclass
+class PromptBundleArtifact:
+    symbol: str
+    generated_at: datetime
+    primary_timeframe: str
+    timeframe_contexts: Dict[str, PromptTimeframeContext]
+    prompts: Dict[str, str]
+    latest_prompt_path: Path
+    latest_bundle_txt_path: Path
+    latest_bundle_json_path: Path
+    archive_bundle_path: Path
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "symbol": self.symbol,
+            "generated_at": self.generated_at.isoformat(),
+            "primary_timeframe": self.primary_timeframe,
+            "timeframes": {
+                tf: {
+                    "timeframe": ctx.timeframe,
+                    "candles": len(ctx.candles),
+                    "indicators": len(ctx.indicators),
+                    "market_regime": ctx.market_regime.value if hasattr(ctx.market_regime, "value") else str(ctx.market_regime),
+                    "day_classification": ctx.day_classification,
+                    "note": ctx.note,
+                }
+                for tf, ctx in self.timeframe_contexts.items()
+            },
+            "prompts": self.prompts,
+            "paths": {
+                "latest_prompt": str(self.latest_prompt_path),
+                "latest_bundle_txt": str(self.latest_bundle_txt_path),
+                "latest_bundle_json": str(self.latest_bundle_json_path),
+                "archive_bundle": str(self.archive_bundle_path),
+            },
+        }
+
+
 class PromptGenerator:
     """
     Generates structured prompts for manual execution on Claude Code CLI or Codex.
@@ -36,7 +104,7 @@ class PromptGenerator:
     The prompt is saved to a file for easy access.
     """
 
-    # Main analysis prompt template - can be customized
+    # Main analysis prompt template - legacy single-timeframe mode.
     ANALYSIS_PROMPT_TEMPLATE = '''You are a professional cryptocurrency/trading analyst with expertise in technical analysis.
 Analyze the following market data and provide an objective evaluation.
 
@@ -98,6 +166,71 @@ Based on ALL the data above, provide your analysis in the following JSON format:
 
 Respond ONLY with the JSON, no additional text.'''
 
+    MULTI_TIMEFRAME_ANALYSIS_PROMPT_TEMPLATE = '''You are a professional cryptocurrency/trading analyst with expertise in technical analysis.
+Analyze the following market data and provide an objective evaluation.
+
+Target AI: {target_name}
+
+## CURRENT MARKET DATA
+
+### Symbol: {symbol}
+### Timestamp: {timestamp}
+### Primary Timeframe: {primary_timeframe}
+### Included Timeframes: {included_timeframes}
+
+## MULTI-TIMEFRAME CONTEXT
+
+### Cross-Timeframe Summary
+{bundle_overview}
+
+### Timeframe Details
+{timeframe_bundle}
+
+### Shared Sentiment Data
+{sentiment}
+
+### Current Market Regime
+{market_regime}
+
+### Day Classification
+{day_classification}
+
+### Pattern Detection
+{patterns}
+
+---
+
+## ANALYSIS REQUIREMENTS
+
+Based on ALL the data above, provide your analysis in the following JSON format:
+
+```json
+{{
+    "market_sentiment": "bullish" | "bearish" | "neutral",
+    "confidence": 0.0-1.0,
+    "key_observations": [
+        "observation 1",
+        "observation 2",
+        "observation 3"
+    ],
+    "recommended_action": "LONG" | "SHORT" | "WAIT" | "CLOSE_POSITIONS",
+    "risk_level": "low" | "moderate" | "high" | "extreme",
+    "reasoning": "Detailed explanation of your analysis and reasoning"
+}}
+```
+
+## GUIDELINES
+
+1. Consider the confluence of multiple indicators across all timeframes
+2. Weight higher timeframes for bias and lower timeframes for execution timing
+3. Use momentum for timing and strength
+4. Check volume for confirmation
+5. Respect the market regime (trending vs ranging)
+6. Be conservative - when in doubt, recommend WAIT
+7. Provide SPECIFIC observations, not generic ones
+
+Respond ONLY with the JSON, no additional text.'''
+
     def __init__(
         self,
         output_dir: str = "prompts",
@@ -119,10 +252,43 @@ Respond ONLY with the JSON, no additional text.'''
         self._last_prompt: Optional[str] = None
         self._last_prompt_time: Optional[datetime] = None
         self._last_result: Optional[AnalysisResult] = None
+        self._last_bundle: Optional[Dict[str, Any]] = None
 
     def _ensure_output_dir(self):
         """Create output directory if it doesn't exist."""
         self.output_dir.mkdir(parents=True, exist_ok=True)
+
+    @staticmethod
+    def _timeframe_sort_key(timeframe: str) -> tuple[int, str]:
+        try:
+            return to_seconds(timeframe), timeframe
+        except Exception:
+            return 10**9, timeframe
+
+    @staticmethod
+    def _normalize_market_regime(value: Any) -> MarketRegime:
+        if isinstance(value, MarketRegime):
+            return value
+        try:
+            return MarketRegime(str(value))
+        except Exception:
+            return MarketRegime.UNKNOWN
+
+    @staticmethod
+    def _normalize_patterns(patterns: Any) -> List[Dict[str, Any]]:
+        if not patterns:
+            return []
+        if isinstance(patterns, list):
+            return [item for item in patterns if isinstance(item, dict)]
+        return []
+
+    @staticmethod
+    def _count_states(indicators: List[IndicatorResult]) -> Dict[str, int]:
+        counts = {"BUY": 0, "SELL": 0, "NEUTRAL": 0, "NO_TRADE": 0, "WAIT": 0}
+        for indicator in indicators:
+            key = getattr(indicator.state, "value", str(indicator.state))
+            counts[key] = counts.get(key, 0) + 1
+        return counts
 
     def _format_candle_data(self, candles: List[Candle]) -> str:
         """Format candle data for the prompt."""
@@ -164,6 +330,91 @@ Respond ONLY with the JSON, no additional text.'''
             lines.append(f"  Range: {low:.2f} - {high:.2f} | Avg Volume: {avg_vol:.0f}")
 
         return "\n".join(lines)
+
+    def _format_timeframe_context(self, timeframe: str, ctx: PromptTimeframeContext) -> str:
+        sections = [
+            f"  ### {timeframe}",
+            f"  Regime: {ctx.market_regime.value if hasattr(ctx.market_regime, 'value') else str(ctx.market_regime)}",
+            f"  Day Classification: {ctx.day_classification}",
+        ]
+        if ctx.note:
+            sections.append(f"  Note: {ctx.note}")
+        sections.append("")
+        sections.append(self._format_candle_data(ctx.candles))
+        sections.append("")
+        sections.append(self._format_indicators(ctx.indicators))
+        sections.append("")
+        sections.append(self._format_sentiment(ctx.sentiment or {}))
+        sections.append("")
+        sections.append(self._format_patterns(self._normalize_patterns(ctx.patterns)))
+        return "\n".join(sections)
+
+    def _format_bundle_overview(self, timeframe_contexts: Dict[str, PromptTimeframeContext]) -> str:
+        if not timeframe_contexts:
+            return "  No timeframe contexts available"
+
+        lines: List[str] = []
+        for timeframe in sorted(timeframe_contexts.keys(), key=self._timeframe_sort_key):
+            ctx = timeframe_contexts[timeframe]
+            candle_count = len(ctx.candles)
+            last_close = ctx.candles[-1].close if ctx.candles else None
+            first_close = ctx.candles[0].close if ctx.candles else None
+            change = None
+            if candle_count >= 2 and first_close:
+                change = ((last_close - first_close) / first_close) * 100 if last_close is not None else None
+            states = self._count_states(ctx.indicators)
+            line = f"  - {timeframe}: candles={candle_count}"
+            if last_close is not None:
+                line += f", close={last_close:.2f}"
+            if change is not None:
+                line += f", change={change:+.2f}%"
+            line += (
+                f", regime={ctx.market_regime.value if hasattr(ctx.market_regime, 'value') else str(ctx.market_regime)}"
+                f", buy={states.get('BUY', 0)}, sell={states.get('SELL', 0)}, neutral={states.get('NEUTRAL', 0)}"
+            )
+            lines.append(line)
+        return "\n".join(lines)
+
+    def _normalize_timeframe_contexts(
+        self,
+        timeframe_contexts: Optional[Dict[str, Any]],
+    ) -> Dict[str, PromptTimeframeContext]:
+        normalized: Dict[str, PromptTimeframeContext] = {}
+        if not timeframe_contexts:
+            return normalized
+        for timeframe, value in timeframe_contexts.items():
+            normalized[str(timeframe)] = PromptTimeframeContext.from_value(str(timeframe), value)
+        return dict(sorted(normalized.items(), key=lambda item: self._timeframe_sort_key(item[0])))
+
+    def _build_multi_timeframe_prompt(
+        self,
+        target_name: str,
+        symbol: str,
+        timeframe_contexts: Dict[str, PromptTimeframeContext],
+        primary_timeframe: str,
+        sentiment: Dict[str, Any] = None,
+        market_regime: MarketRegime = MarketRegime.UNKNOWN,
+        day_classification: str = "unknown",
+        patterns: List[Dict[str, Any]] = None,
+    ) -> str:
+        bundle_overview = self._format_bundle_overview(timeframe_contexts)
+        timeframe_bundle = "\n\n".join(
+            self._format_timeframe_context(timeframe, ctx) for timeframe, ctx in timeframe_contexts.items()
+        )
+        included_timeframes = ", ".join(timeframe_contexts.keys()) if timeframe_contexts else "none"
+        return self.MULTI_TIMEFRAME_ANALYSIS_PROMPT_TEMPLATE.format(
+            target_name=target_name.upper(),
+            symbol=symbol,
+            timestamp=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
+            primary_timeframe=primary_timeframe,
+            included_timeframes=included_timeframes,
+            bundle_overview=bundle_overview,
+            timeframe_bundle=timeframe_bundle,
+            sentiment=self._format_sentiment(sentiment or {}),
+            market_regime=market_regime.value if hasattr(market_regime, "value") else str(market_regime),
+            day_classification=day_classification,
+            patterns=self._format_patterns(patterns or []),
+        )
 
     def _format_indicators(self, indicators: List[IndicatorResult]) -> str:
         """Format indicator data for the prompt."""
@@ -322,9 +573,31 @@ Respond ONLY with the JSON, no additional text.'''
         day_classification: str = "unknown",
         patterns: List[Dict[str, Any]] = None,
         save_to_file: bool = True,
+        timeframe_contexts: Optional[Dict[str, Any]] = None,
+        primary_timeframe: Optional[str] = None,
     ) -> Dict[str, str]:
         now = datetime.now(timezone.utc)
         prompts: Dict[str, str] = {}
+        normalized_contexts = self._normalize_timeframe_contexts(timeframe_contexts)
+        if normalized_contexts:
+            primary_tf = primary_timeframe if primary_timeframe in normalized_contexts else next(iter(normalized_contexts))
+            artifact = self._build_prompt_bundle_artifact(
+                symbol=symbol,
+                timeframe_contexts=normalized_contexts,
+                primary_timeframe=primary_tf,
+                sentiment=sentiment,
+                market_regime=market_regime,
+                day_classification=day_classification,
+                patterns=patterns,
+                save_to_file=save_to_file,
+                timestamp=now,
+            )
+            prompts.update(artifact.prompts)
+            self._last_prompt = artifact.prompts[self.targets[0]]
+            self._last_prompt_time = now
+            self._last_bundle = artifact.to_dict()
+            return prompts
+
         for target in self.targets:
             prompt = self._build_prompt(
                 target_name=target,
@@ -343,7 +616,105 @@ Respond ONLY with the JSON, no additional text.'''
         if prompts:
             self._last_prompt = prompts[self.targets[0]]
             self._last_prompt_time = now
+            self._last_bundle = None
         return prompts
+
+    def _build_prompt_bundle_artifact(
+        self,
+        symbol: str,
+        timeframe_contexts: Dict[str, PromptTimeframeContext],
+        primary_timeframe: str,
+        sentiment: Dict[str, Any] = None,
+        market_regime: MarketRegime = MarketRegime.UNKNOWN,
+        day_classification: str = "unknown",
+        patterns: List[Dict[str, Any]] = None,
+        save_to_file: bool = True,
+        timestamp: Optional[datetime] = None,
+    ) -> PromptBundleArtifact:
+        timestamp = timestamp or datetime.now(timezone.utc)
+        prompts: Dict[str, str] = {}
+        bundle_payload = {
+            "symbol": symbol,
+            "generated_at": timestamp.isoformat(),
+            "primary_timeframe": primary_timeframe,
+            "timeframes": {
+                tf: {
+                    "timeframe": ctx.timeframe,
+                    "candles": [asdict(candle) for candle in ctx.candles],
+                    "indicators": [asdict(ind) for ind in ctx.indicators],
+                    "sentiment": ctx.sentiment or {},
+                    "market_regime": ctx.market_regime.value if hasattr(ctx.market_regime, "value") else str(ctx.market_regime),
+                    "day_classification": ctx.day_classification,
+                    "patterns": self._normalize_patterns(ctx.patterns),
+                    "note": ctx.note,
+                }
+                for tf, ctx in timeframe_contexts.items()
+            },
+            "shared": {
+                "sentiment": sentiment or {},
+                "market_regime": market_regime.value if hasattr(market_regime, "value") else str(market_regime),
+                "day_classification": day_classification,
+                "patterns": self._normalize_patterns(patterns),
+            },
+        }
+
+        for target in self.targets:
+            prompt = self._build_multi_timeframe_prompt(
+                target_name=target,
+                symbol=symbol,
+                timeframe_contexts=timeframe_contexts,
+                primary_timeframe=primary_timeframe,
+                sentiment=sentiment,
+                market_regime=market_regime,
+                day_classification=day_classification,
+                patterns=patterns,
+            )
+            prompts[target] = prompt
+            if save_to_file:
+                self._save_prompt(prompt, symbol, timestamp, target)
+
+        self._ensure_output_dir()
+        latest_bundle_txt = self.output_dir / "latest_prompt_bundle.txt"
+        latest_bundle_json = self.output_dir / "latest_prompt_bundle.json"
+        archive_bundle_dir = self.output_dir / "archive"
+        archive_bundle_dir.mkdir(exist_ok=True)
+        archive_bundle_path = archive_bundle_dir / f"prompt_bundle_{symbol}_{timestamp.strftime('%Y%m%d_%H%M')}.json"
+        if save_to_file:
+            bundle_text = self._render_bundle_text(bundle_payload, prompts)
+            latest_bundle_txt.write_text(bundle_text, encoding="utf-8")
+            latest_bundle_json.write_text(json.dumps(bundle_payload, indent=2, ensure_ascii=True, default=str), encoding="utf-8")
+            archive_bundle_path.write_text(json.dumps(bundle_payload, indent=2, ensure_ascii=True, default=str), encoding="utf-8")
+
+        latest_prompt_path = self.output_dir / f"latest_prompt_{self.targets[0]}.txt"
+        return PromptBundleArtifact(
+            symbol=symbol,
+            generated_at=timestamp,
+            primary_timeframe=primary_timeframe,
+            timeframe_contexts=timeframe_contexts,
+            prompts=prompts,
+            latest_prompt_path=latest_prompt_path,
+            latest_bundle_txt_path=latest_bundle_txt,
+            latest_bundle_json_path=latest_bundle_json,
+            archive_bundle_path=archive_bundle_path,
+        )
+
+    def _render_bundle_text(self, bundle_payload: Dict[str, Any], prompts: Dict[str, str]) -> str:
+        lines = [
+            f"# Generated: {bundle_payload['generated_at']}",
+            f"# Symbol: {bundle_payload['symbol']}",
+            f"# Primary Timeframe: {bundle_payload['primary_timeframe']}",
+            "# Included Timeframes: " + ", ".join(bundle_payload["timeframes"].keys()),
+            "",
+            "## Shared Context",
+            json.dumps(bundle_payload["shared"], indent=2, ensure_ascii=True, default=str),
+            "",
+            "## Per-Target Prompts",
+        ]
+        for target, prompt in prompts.items():
+            lines.append(f"### {target.upper()}")
+            lines.append(prompt)
+            lines.append("")
+        return "\n".join(lines).strip() + "\n"
 
     def _save_prompt(self, prompt: str, symbol: str, timestamp: datetime, target_name: str):
         """Save prompt to file for easy access."""
@@ -376,6 +747,10 @@ Respond ONLY with the JSON, no additional text.'''
             f.write(prompt)
 
         logger.info("Prompt saved to: %s", latest_path)
+
+    def get_last_bundle(self) -> Optional[Dict[str, Any]]:
+        """Get the last generated multi-timeframe bundle payload, if any."""
+        return self._last_bundle
 
     def parse_response(self, response_text: str, target_name: str = "claude") -> Optional[AnalysisResult]:
         """

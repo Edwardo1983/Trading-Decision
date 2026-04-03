@@ -14,6 +14,11 @@ logs/
 *.csv
 prompts/
 .pytest_cache/
+.pytest_tmp*/
+.tmp_pytest_root/
+tests/.pytest_tmp_local/
+tests/_pytest_tmp_root/
+tmpty88yio0/
 .mypy_cache/
 promt/
 runner.pid

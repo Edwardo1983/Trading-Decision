@@ -82,17 +82,30 @@ python -m app validate-config
 ```
 Comenzile se ruleaza din folderul `main/`.
 `start` ruleaza continuu; `stop` se da dintr-un al doilea terminal (nu doar `Ctrl+C`).
+Din workspace root, foloseste echivalentul:
+```
+python -m main.app start
+python -m main.app stop
+python -m main.app status
+python -m main.app validate-config
+```
 
 ## ML Training + Backtest
 Ruleaza din `main/`:
 ```
-python scripts/train_model.py --symbol BTCUSDT
-python scripts/backtest.py --symbol BTCUSDT
-python scripts/backtest.py --symbol BTCUSDT --walk-forward --window-size 800 --step-size 100
+python scripts/train_model.py --symbol BTCUSDC --trade-mode short
+python scripts/backtest.py --symbol BTCUSDC --trade-mode short
+python scripts/backtest.py --symbol BTCUSDC --trade-mode short --walk-forward --window-size 800 --step-size 100
+```
+Daca ramai in folderul de baza (`Trading Decision Dashboard/`):
+```
+python .\main\scripts\train_model.py --symbol BTCUSDC --trade-mode short
+python .\main\scripts\backtest.py --symbol BTCUSDC --trade-mode short
 ```
 Dupa training:
 - seteaza `ml.enabled: true` in `config/default.yaml`
-- verifica existenta modelului: `assets/models/ml_signal_model.npz`
+- calea preferata pentru artifact: `assets/models/<SYMBOL>/<trade_mode>/ml_signal_model.npz`
+- fallback-uri suportate: `assets/models/<SYMBOL>/ml_signal_model.npz` si calea legacy din root
 
 ## Prompt pentru Claude/Codex
 - Config: `prompt_generator` in `config/default.yaml`
@@ -111,7 +124,7 @@ Dupa training:
 ## Configurare
 - Fisier principal: `config/default.yaml`
 - Profile: `config/aggressive.yaml`, `config/conservative.yaml`
-- Multi-symbol: `app.symbols` in YAML sau `APP_SYMBOLS=BTCUSDT,ETHUSDT`
+- Multi-symbol: `app.symbols` in YAML sau `APP_SYMBOLS=BTCUSDC,ETHUSDC`
 - Provider date: `data.provider` = auto/binance/mexc (auto selecteaza disponibil)
 
 Sectiuni cheie:
@@ -229,17 +242,30 @@ python -m app validate-config
 ```
 Run CLI commands from the `main/` folder.
 `start` runs continuously; use `stop` from a second terminal (not only `Ctrl+C`).
+From the workspace root, use the equivalent:
+```
+python -m main.app start
+python -m main.app stop
+python -m main.app status
+python -m main.app validate-config
+```
 
 ## ML Training + Backtest
 Run from `main/`:
 ```
-python scripts/train_model.py --symbol BTCUSDT
-python scripts/backtest.py --symbol BTCUSDT
-python scripts/backtest.py --symbol BTCUSDT --walk-forward --window-size 800 --step-size 100
+python scripts/train_model.py --symbol BTCUSDC --trade-mode short
+python scripts/backtest.py --symbol BTCUSDC --trade-mode short
+python scripts/backtest.py --symbol BTCUSDC --trade-mode short --walk-forward --window-size 800 --step-size 100
+```
+From the workspace root (`Trading Decision Dashboard/`):
+```
+python .\main\scripts\train_model.py --symbol BTCUSDC --trade-mode short
+python .\main\scripts\backtest.py --symbol BTCUSDC --trade-mode short
 ```
 After training:
 - set `ml.enabled: true` in `config/default.yaml`
-- ensure the model exists at `assets/models/ml_signal_model.npz`
+- preferred artifact path: `assets/models/<SYMBOL>/<trade_mode>/ml_signal_model.npz`
+- fallback paths still supported: `assets/models/<SYMBOL>/ml_signal_model.npz` and legacy root path
 
 ## Claude/Codex Prompt
 - Config block: `prompt_generator` in `config/default.yaml`
@@ -258,7 +284,7 @@ After training:
 ## Configuration
 - Main file: `config/default.yaml`
 - Profiles: `config/aggressive.yaml`, `config/conservative.yaml`
-- Multi-symbol: `app.symbols` in YAML or `APP_SYMBOLS=BTCUSDT,ETHUSDT`
+- Multi-symbol: `app.symbols` in YAML or `APP_SYMBOLS=BTCUSDC,ETHUSDC`
 - Data provider: `data.provider` = auto/binance/mexc (auto selects available)
 
 Key sections:

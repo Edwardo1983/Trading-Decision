@@ -3,11 +3,17 @@ from __future__ import annotations
 import csv
 import json
 from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Sequence, Tuple
 
 import numpy as np
 
+from ml.artifacts import (
+    ModelArtifactIdentity,
+    resolve_metadata_path,
+    resolve_model_path,
+)
 from ml.features import build_row_feature_vector
 from ml.models import LogisticSignalModel, classification_metrics
 
@@ -43,6 +49,11 @@ class TrainingReport:
     test_coverage: float
     model_path: str
     metadata_path: str
+    artifact_symbol: str | None = None
+    artifact_trade_mode: str | None = None
+    artifact_model_name: str | None = None
+    artifact_schema_version: int | None = None
+    feature_count: int | None = None
 
 
 def _safe_float(value: object, default: float = 0.0) -> float:
@@ -206,7 +217,10 @@ def train_from_rows(
     model_path: str | Path,
     metadata_path: str | Path,
     config: TrainingConfig,
+    *,
+    artifact_identity: ModelArtifactIdentity | None = None,
 ) -> TrainingReport:
+    identity = (artifact_identity or ModelArtifactIdentity()).normalized()
     x, y = _labeled_dataset(
         rows=rows,
         indicator_names=indicator_names,
@@ -245,11 +259,27 @@ def train_from_rows(
     test_coverage = float(np.mean(acted)) if len(test_pred) else 0.0
     test_metrics = classification_metrics(y_test[acted], test_pred[acted]) if np.any(acted) else {}
 
-    saved_model = model.save(model_path)
-    metadata_out = Path(metadata_path)
+    saved_model = model.save(
+        resolve_model_path(model_path, symbol=identity.symbol, trade_mode=identity.trade_mode, model_name=identity.model_name),
+        identity=identity,
+        extra_metadata={
+            "rows_loaded": len(rows),
+            "samples_used": len(x),
+            "indicator_names": indicator_names,
+            "training_config": asdict(config),
+            "thresholds": {"buy": buy_th, "sell": sell_th},
+            "validation_metrics": val_metrics,
+            "test_metrics": test_metrics,
+            "calibration_coverage": val_coverage,
+            "test_coverage": test_coverage,
+            "trained_at_utc": datetime.now(timezone.utc).isoformat(),
+        },
+    )
+    metadata_out = Path(metadata_path) if metadata_path else resolve_metadata_path(saved_model)
     metadata_out.parent.mkdir(parents=True, exist_ok=True)
     metadata = {
         "symbol": symbol,
+        "trade_mode": identity.trade_mode,
         "rows_loaded": len(rows),
         "samples_used": len(x),
         "indicator_names": indicator_names,
@@ -259,6 +289,10 @@ def train_from_rows(
         "test_metrics": test_metrics,
         "calibration_coverage": val_coverage,
         "test_coverage": test_coverage,
+        "artifact_identity": identity.as_dict(),
+        "artifact_schema_version": identity.schema_version,
+        "feature_count": int(model.weights.size),
+        "trained_at_utc": datetime.now(timezone.utc).isoformat(),
     }
     metadata_out.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
 
@@ -277,6 +311,11 @@ def train_from_rows(
         test_coverage=test_coverage,
         model_path=str(saved_model),
         metadata_path=str(metadata_out),
+        artifact_symbol=identity.symbol,
+        artifact_trade_mode=identity.trade_mode,
+        artifact_model_name=identity.model_name,
+        artifact_schema_version=identity.schema_version,
+        feature_count=int(model.weights.size),
     )
 
 
@@ -287,6 +326,8 @@ def train_from_log_files(
     model_path: str | Path,
     metadata_path: str | Path,
     config: TrainingConfig,
+    *,
+    artifact_identity: ModelArtifactIdentity | None = None,
 ) -> TrainingReport:
     paths = [Path(path) for path in csv_paths]
     rows = _load_csv_rows(paths, symbol=symbol)
@@ -299,4 +340,5 @@ def train_from_log_files(
         model_path=model_path,
         metadata_path=metadata_path,
         config=config,
+        artifact_identity=artifact_identity,
     )

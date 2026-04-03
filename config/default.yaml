@@ -1,7 +1,8 @@
 app:
-  symbol: BTCUSDT
-  symbols: ["BTCUSDT"]
+  symbol: BTCUSDC
+  symbols: ["BTCUSDC", "ETHUSDC"]
   trade_mode: "short"
+  summary_timeframes: ["1m", "15m", "1h", "4h"]
   trade_modes:
     short:
       analysis_timeframes: ["1m", "5m", "15m", "1h", "4h"]

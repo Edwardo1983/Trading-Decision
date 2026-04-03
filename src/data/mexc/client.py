@@ -14,19 +14,36 @@ class MexcRESTClient:
         self.api_key = api_key
         self.api_secret = api_secret
         self.base_url = base_url.rstrip("/")
+        self._client: Optional[httpx.AsyncClient] = None
+        self._timeout = httpx.Timeout(10.0)
+        self._limits = httpx.Limits(max_connections=10, max_keepalive_connections=5)
 
-    async def _get(self, path: str, params: Optional[Dict[str, Any]] = None, retries: int = 3, backoff: float = 2.0) -> Any:
-        url = f"{self.base_url}{path}"
+    def _get_headers(self) -> Dict[str, str]:
         headers = {}
         if self.api_key:
             headers["X-MEXC-APIKEY"] = self.api_key
+        return headers
+
+    def _get_client(self) -> httpx.AsyncClient:
+        if self._client is None or self._client.is_closed:
+            self._client = httpx.AsyncClient(timeout=self._timeout, limits=self._limits)
+        return self._client
+
+    async def aclose(self) -> None:
+        if self._client is not None and not self._client.is_closed:
+            await self._client.aclose()
+        self._client = None
+
+    async def _get(self, path: str, params: Optional[Dict[str, Any]] = None, retries: int = 3, backoff: float = 2.0) -> Any:
+        url = f"{self.base_url}{path}"
+        headers = self._get_headers()
         attempt = 0
         while True:
             try:
-                async with httpx.AsyncClient(timeout=10) as client:
-                    resp = await client.get(url, params=params, headers=headers)
-                    resp.raise_for_status()
-                    return resp.json()
+                client = self._get_client()
+                resp = await client.get(url, params=params, headers=headers)
+                resp.raise_for_status()
+                return resp.json()
             except Exception as exc:
                 attempt += 1
                 if attempt > retries:

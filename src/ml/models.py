@@ -1,10 +1,20 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Tuple
+from typing import Any, Dict, Mapping, Tuple
 
 import numpy as np
+
+from ml.artifacts import (
+    ModelArtifactIdentity,
+    artifact_metadata_payload,
+    extract_artifact_identity,
+    load_json_file,
+    resolve_metadata_path,
+    resolve_model_path,
+)
 
 
 @dataclass
@@ -20,6 +30,10 @@ class MLResult:
 class Thresholds:
     buy: float = 0.62
     sell: float = 0.38
+
+
+class ModelArtifactError(ValueError):
+    pass
 
 
 class LogisticSignalModel:
@@ -40,6 +54,9 @@ class LogisticSignalModel:
         self.bias: float = 0.0
         self.feature_mean: np.ndarray | None = None
         self.feature_std: np.ndarray | None = None
+        self.artifact_identity: ModelArtifactIdentity = ModelArtifactIdentity()
+        self.artifact_metadata: Dict[str, Any] = {}
+        self.artifact_path: Path | None = None
 
     @staticmethod
     def _sigmoid(values: np.ndarray) -> np.ndarray:
@@ -125,11 +142,23 @@ class LogisticSignalModel:
     def set_thresholds(self, buy: float, sell: float) -> None:
         self.thresholds = Thresholds(buy=float(buy), sell=float(sell))
 
-    def save(self, path: str | Path) -> Path:
+    def save(
+        self,
+        path: str | Path,
+        *,
+        identity: ModelArtifactIdentity | None = None,
+        extra_metadata: Mapping[str, Any] | None = None,
+    ) -> Path:
         if self.weights is None:
             raise ValueError("model is not trained")
-        out_path = Path(path)
+        artifact_identity = (identity or self.artifact_identity or ModelArtifactIdentity()).normalized()
+        out_path = resolve_model_path(path, symbol=artifact_identity.symbol, trade_mode=artifact_identity.trade_mode, model_name=artifact_identity.model_name)
         out_path.parent.mkdir(parents=True, exist_ok=True)
+        payload = artifact_metadata_payload(
+            artifact_identity,
+            feature_count=int(self.weights.size),
+            extra=extra_metadata,
+        )
         np.savez_compressed(
             out_path,
             weights=self.weights,
@@ -139,27 +168,91 @@ class LogisticSignalModel:
             lookback=np.asarray([self.lookback], dtype=np.int64),
             buy_threshold=np.asarray([self.thresholds.buy], dtype=np.float64),
             sell_threshold=np.asarray([self.thresholds.sell], dtype=np.float64),
+            artifact_identity_json=np.asarray([json.dumps(payload, sort_keys=True, default=str)], dtype=np.str_),
+            artifact_schema_version=np.asarray([artifact_identity.schema_version], dtype=np.int64),
+            feature_count=np.asarray([int(self.weights.size)], dtype=np.int64),
         )
+        self.artifact_identity = artifact_identity
+        self.artifact_metadata = dict(payload)
+        self.artifact_path = out_path
         return out_path
 
     @classmethod
-    def load(cls, path: str | Path) -> "LogisticSignalModel":
+    def load(
+        cls,
+        path: str | Path,
+        *,
+        expected_symbol: str | None = None,
+        expected_trade_mode: str | None = None,
+    ) -> "LogisticSignalModel":
         in_path = Path(path)
         if not in_path.exists():
             raise FileNotFoundError(f"Model file not found: {in_path}")
-        data = np.load(in_path, allow_pickle=False)
-        model = cls(
-            lookback=int(data["lookback"][0]) if "lookback" in data else 21,
-            buy_threshold=float(data["buy_threshold"][0]) if "buy_threshold" in data else 0.62,
-            sell_threshold=float(data["sell_threshold"][0]) if "sell_threshold" in data else 0.38,
-        )
-        model.weights = data["weights"].astype(np.float64)
-        model.bias = float(data["bias"][0]) if "bias" in data else 0.0
-        mean = data["mean"] if "mean" in data else np.asarray([], dtype=np.float64)
-        std = data["std"] if "std" in data else np.asarray([], dtype=np.float64)
-        model.feature_mean = mean.astype(np.float64) if mean.size else None
-        model.feature_std = std.astype(np.float64) if std.size else None
-        return model
+        with np.load(in_path, allow_pickle=False) as data:
+            required_keys = {"weights", "bias"}
+            missing = [key for key in required_keys if key not in data]
+            if missing:
+                raise ModelArtifactError(f"Model artifact missing required key(s): {', '.join(missing)}")
+
+            weights = np.asarray(data["weights"], dtype=np.float64)
+            if weights.ndim != 1 or weights.size == 0:
+                raise ModelArtifactError("Model weights must be a non-empty 1D vector.")
+
+            bias_arr = np.asarray(data["bias"], dtype=np.float64)
+            if bias_arr.size == 0:
+                raise ModelArtifactError("Model bias is empty.")
+            bias = float(bias_arr.reshape(-1)[0])
+
+            model = cls(
+                lookback=int(data["lookback"][0]) if "lookback" in data else 21,
+                buy_threshold=float(data["buy_threshold"][0]) if "buy_threshold" in data else 0.62,
+                sell_threshold=float(data["sell_threshold"][0]) if "sell_threshold" in data else 0.38,
+            )
+            if not 0.0 <= model.thresholds.buy <= 1.0 or not 0.0 <= model.thresholds.sell <= 1.0:
+                raise ModelArtifactError("Model thresholds must be within [0, 1].")
+            if model.thresholds.sell >= model.thresholds.buy:
+                raise ModelArtifactError("Model sell threshold must be lower than buy threshold.")
+
+            mean = np.asarray(data["mean"], dtype=np.float64) if "mean" in data else np.asarray([], dtype=np.float64)
+            std = np.asarray(data["std"], dtype=np.float64) if "std" in data else np.asarray([], dtype=np.float64)
+            if mean.size and mean.shape != weights.shape:
+                raise ModelArtifactError("Model mean vector shape mismatch.")
+            if std.size and std.shape != weights.shape:
+                raise ModelArtifactError("Model std vector shape mismatch.")
+
+            artifact_metadata: Dict[str, Any] = {}
+            if "artifact_identity_json" in data:
+                raw_identity = data["artifact_identity_json"]
+                try:
+                    artifact_metadata = json.loads(str(np.asarray(raw_identity).reshape(-1)[0]))
+                except Exception as exc:
+                    raise ModelArtifactError(f"Invalid artifact metadata embedded in model: {exc}") from exc
+            sidecar_metadata = load_json_file(resolve_metadata_path(in_path))
+            if sidecar_metadata:
+                merged_metadata = dict(sidecar_metadata)
+                merged_metadata.update(artifact_metadata)
+                artifact_metadata = merged_metadata
+
+            model_identity = extract_artifact_identity(artifact_metadata)
+            expected_symbol_norm = ModelArtifactIdentity(symbol=expected_symbol).normalized().symbol
+            expected_trade_mode_norm = ModelArtifactIdentity(trade_mode=expected_trade_mode).normalized().trade_mode
+            if expected_symbol_norm and model_identity.symbol and expected_symbol_norm != model_identity.symbol:
+                raise ModelArtifactError(
+                    f"Model symbol mismatch: expected {expected_symbol_norm}, found {model_identity.symbol}."
+                )
+            if expected_trade_mode_norm and model_identity.trade_mode and expected_trade_mode_norm != model_identity.trade_mode:
+                raise ModelArtifactError(
+                    f"Model trade mode mismatch: expected {expected_trade_mode_norm}, found {model_identity.trade_mode}."
+                )
+
+            model.weights = weights
+            model.bias = bias
+            model.feature_mean = mean if mean.size else None
+            model.feature_std = std if std.size else None
+            model.artifact_identity = model_identity
+            model.artifact_metadata = dict(artifact_metadata)
+            model.artifact_path = in_path
+            return model
 
 
 def classification_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> Dict[str, float]:

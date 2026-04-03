@@ -10,7 +10,7 @@ def create_runner() -> Runner | MultiRunner:
     config = load_config()
     setup_logging()
     app = config.get("app", {})
-    symbols = app.get("symbols") or [app.get("symbol", "BTCUSDT")]
+    symbols = app.get("symbols") or [app.get("symbol", "BTCUSDC")]
     if symbols and len(symbols) > 1:
         return MultiRunner(config)
     return Runner(config)

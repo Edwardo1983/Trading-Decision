@@ -56,6 +56,94 @@ section.main > div {
   font-size: 0.95rem;
 }
 
+.ops-card {
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
+  padding: 0.75rem 0.9rem;
+  margin: 0.55rem 0 0.15rem;
+  box-shadow: 0 4px 16px rgba(13, 45, 96, 0.05);
+}
+
+.ops-card-title {
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: var(--ink);
+  letter-spacing: 0.03rem;
+  margin-bottom: 0.45rem;
+}
+
+.ops-state {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 92px;
+  border-radius: 999px;
+  padding: 0.18rem 0.65rem;
+  font-size: 0.76rem;
+  font-weight: 700;
+  letter-spacing: 0.05rem;
+  margin-bottom: 0.45rem;
+}
+
+.ops-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.8rem;
+  margin: 0.24rem 0;
+  font-size: 0.88rem;
+  color: var(--ink-soft);
+}
+
+.ops-row strong {
+  color: var(--ink);
+  text-align: right;
+}
+
+.status-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.14rem 0.55rem;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.04rem;
+}
+
+.state-ready {
+  color: #0f6a44;
+  background: #e1f5ea;
+  border: 1px solid #b8e4ce;
+}
+
+.state-degraded {
+  color: #8b5c00;
+  background: #fff2d6;
+  border: 1px solid #f3d28f;
+}
+
+.state-off {
+  color: #607088;
+  background: #eef3f8;
+  border: 1px solid #d7e1ed;
+}
+
+.state-error {
+  color: #8f2d2d;
+  background: #fde8e8;
+  border: 1px solid #f2bcbc;
+}
+
+.state-neutral {
+  color: #4b5f79;
+  background: #edf4fd;
+  border: 1px solid #bfd0e6;
+}
+
+.symbol-ops {
+  margin-top: 0.25rem;
+}
+
 .status-dot {
   font-size: 0.82rem;
   margin-left: 0.25rem;

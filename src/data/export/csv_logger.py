@@ -39,6 +39,7 @@ class CSVMinuteLogger:
         self._lock = Lock()
         self._current_date: Optional[date] = None
         self._current_file: Optional[Path] = None
+        self._validated_headers: Dict[Path, tuple[str, ...]] = {}
 
     def _now(self) -> datetime:
         if self.clock_sync:
@@ -252,13 +253,15 @@ class CSVMinuteLogger:
 
         with self._lock:
             headers = self._headers(sorted(include_set))
+            headers_signature = tuple(headers)
             file_exists = file_path.exists()
-            if file_exists:
+            cached_headers = self._validated_headers.get(file_path)
+            if file_exists and cached_headers != headers_signature:
                 try:
                     with file_path.open("r", newline="", encoding="utf-8") as existing_file:
                         reader = csv.reader(existing_file)
-                        existing_headers = next(reader, [])
-                    if existing_headers != headers:
+                        existing_headers = tuple(next(reader, []))
+                    if existing_headers != headers_signature:
                         backup_path = file_path.with_name(f"{file_path.stem}_legacy{file_path.suffix}")
                         suffix = 1
                         while backup_path.exists():
@@ -272,11 +275,16 @@ class CSVMinuteLogger:
                             backup_path,
                         )
                         file_exists = False
+                        self._validated_headers.pop(file_path, None)
+                    else:
+                        self._validated_headers[file_path] = headers_signature
                 except Exception as exc:
                     logger.warning("Could not validate CSV header for %s: %s", file_path, exc)
+                    file_exists = False
             with file_path.open("a", newline="", encoding="utf-8") as f:
                 writer = csv.DictWriter(f, fieldnames=headers)
                 if not file_exists:
                     writer.writeheader()
+                self._validated_headers[file_path] = headers_signature
                 writer.writerow(row)
                 f.flush()

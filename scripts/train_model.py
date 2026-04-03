@@ -10,12 +10,34 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 from core.utils.config_loader import load_config
+from ml.artifacts import ModelArtifactIdentity
 from ml.trainer import TrainingConfig, train_from_log_files
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _resolve_path(path_text: str) -> Path:
+    candidate = Path(path_text)
+    if candidate.is_absolute() and candidate.exists():
+        return candidate
+    if candidate.exists():
+        return candidate
+
+    project_candidate = PROJECT_ROOT / candidate
+    if project_candidate.exists():
+        return project_candidate
+
+    repo_candidate = PROJECT_ROOT.parent / candidate
+    if repo_candidate.exists():
+        return repo_candidate
+
+    return project_candidate if not candidate.is_absolute() else candidate
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Train ML advisory model from CSV logs.")
-    parser.add_argument("--symbol", default="BTCUSDT", help="Trading symbol (default: BTCUSDT)")
+    parser.add_argument("--symbol", default="BTCUSDC", help="Trading symbol (default: BTCUSDC)")
+    parser.add_argument("--trade-mode", default="", help="Trade mode namespace for the model artifact (short or long).")
     parser.add_argument("--logs-dir", default="logs", help="Logs directory containing CSV files.")
     parser.add_argument("--model-path", default="", help="Output model path (.npz).")
     parser.add_argument("--metadata-path", default="", help="Output metadata json path.")
@@ -29,14 +51,16 @@ def main() -> None:
     indicator_names = list(cfg.get("csv", {}).get("include_indicators", []))
     if not indicator_names:
         indicator_names = sorted(cfg.get("indicator_weights", {}).keys())
-    logs_dir = Path(args.logs_dir)
+    logs_dir = _resolve_path(args.logs_dir)
     symbol = args.symbol.upper()
+    app_cfg = cfg.get("app", {})
+    trade_mode = str(args.trade_mode or app_cfg.get("trade_mode", "")).strip().lower() or None
     csv_files = sorted(logs_dir.glob(f"*{symbol}*.csv"))
     if not csv_files:
         raise SystemExit(f"No CSV files found for symbol {symbol} in {logs_dir}")
 
-    model_path = args.model_path or ml_cfg.get("model_path", "assets/models/ml_signal_model.npz")
-    metadata_path = args.metadata_path or str(Path(model_path).with_suffix(".metadata.json"))
+    model_path = _resolve_path(args.model_path or ml_cfg.get("model_path", "assets/models/ml_signal_model.npz"))
+    metadata_path = _resolve_path(args.metadata_path) if args.metadata_path else ""
     training_config = TrainingConfig(
         lookback=int(args.lookback or ml_cfg.get("lookback", 21)),
         lookahead=int(args.lookahead or ml_cfg.get("target_lookahead", 5)),
@@ -55,6 +79,7 @@ def main() -> None:
         model_path=model_path,
         metadata_path=metadata_path,
         config=training_config,
+        artifact_identity=ModelArtifactIdentity(symbol=symbol, trade_mode=trade_mode),
     )
     print(json.dumps(report.__dict__, indent=2))
 
