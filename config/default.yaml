@@ -261,7 +261,7 @@ risk_filters:
   enable_htf_conflict: true
 
 ml:
-  enabled: false
+  enabled: true
   lookback: 21
   model_path: "assets/models/ml_signal_model.npz"
   target_lookahead: 5
